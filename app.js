@@ -3114,7 +3114,7 @@ function openBookDialog(iso, appointment) {
     el("p", "", partsText(appointment)),
     labeled("Start time", select),
     labeled("Note (optional)", note.node),
-    el("p", "notice", "Don't enter participant information here. After you book, an email to the reviewers opens in your own USC email: add the Screener ID and send it."),
+    el("p", "notice", "Don't enter participant information here. After you book, an email to the reviewers opens in Gmail in a new tab (sign in to your USC account if asked): add the Screener ID and send it."),
   ], [
     dialogButton("Mark booked", "primary", async () => {
       const requested = select.value;
@@ -3128,11 +3128,19 @@ function openBookDialog(iso, appointment) {
           throw stop;
         }
       }
-      await setBooking(appointment, "booked", requested, text);
-      openEmailDraft(bookingEmailUrl(iso, appointment, requested, text));
-      return requested
-        ? `Booked, asking to start at ${formatTime(requested)}. An email to the reviewers has opened: add the Screener ID and send it.`
-        : "Booked. An email to the reviewers has opened: add the Screener ID and send it.";
+      // The tab opens now, while the click still counts, since browsers block tabs opened after the save.
+      const draft = openDraftTab();
+      try {
+        await setBooking(appointment, "booked", requested, text);
+      } catch (error) {
+        if (draft) draft.close();
+        throw error;
+      }
+      const opened = showEmailDraft(draft, bookingEmailUrl(iso, appointment, requested, text));
+      const next = opened
+        ? "An email to the reviewers has opened in Gmail: add the Screener ID and send it."
+        : "Your browser blocked the Gmail tab, so use Email booking details to reviewers on your booking.";
+      return requested ? `Booked, asking to start at ${formatTime(requested)}. ${next}` : `Booked. ${next}`;
     }),
     closeButton(),
   ]);
@@ -3213,18 +3221,34 @@ function bookingEmailUrl(iso, appointment, requestedStart = "", bookerNote = app
     link: visitLink(appointment),
     note: bookerNote,
   });
-  return `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  // Gmail in the browser rather than the computer's mail app, since bookers on the lab computer sign in on the web.
+  // Signed out, Gmail asks them to sign in and then opens the same draft.
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}`
+    + `&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
 function bookingEmailLink(iso, appointment) {
   const link = el("a", "secondary small button-link", "Email booking details to reviewers");
   link.href = bookingEmailUrl(iso, appointment, appointment.requestedStart || "");
+  link.target = "_blank";
+  link.rel = "noopener";
   return link;
 }
 
-// Opens a drafted email in the booker's email app. If nothing opens, the button on the visit does the same.
-function openEmailDraft(url) {
-  if (window.location && typeof window.location.assign === "function") window.location.assign(url);
+// A blank tab for the booker's Gmail draft, or null if the browser blocks it. If it's blocked, the button on the
+// visit opens the same draft.
+function openDraftTab() {
+  if (typeof window.open !== "function") return null;
+  const draft = window.open("", "_blank");
+  if (draft && draft.document) draft.document.title = "Opening Gmail…";
+  return draft || null;
+}
+
+function showEmailDraft(draft, url) {
+  if (!draft || draft.closed) return false;
+  draft.opener = null;
+  draft.location.href = url;
+  return true;
 }
 
 // Asks the Apps Script to update LCL Visits and send any cancellation emails now, rather than at its next 10-minute
