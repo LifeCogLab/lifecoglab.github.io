@@ -4112,7 +4112,74 @@ function seenDecisions() {
 
 function unseenDecisions() {
   const seen = seenDecisions();
-  return myRequests().filter((item) => item.request.status !== "pending" && !seen.has(`${item.key}:${item.request.status}`));
+  const cleared = clearedIds("mine");
+  return myRequests().filter((item) => item.request.status !== "pending" && !seen.has(`${item.key}:${item.request.status}`)
+    && !isCleared(item.key, item.request, cleared));
+}
+
+// --- Clearing decided requests ---
+// Approved and declined requests can be cleared from view, and clear themselves 30 days after they're decided.
+// What's cleared is remembered per person in this browser only, and a request whose decision changes comes back.
+const CLEAR_AFTER_DAYS = 30;
+const showCleared = { mine: false, review: false };
+
+function clearedKey(list) {
+  return `lcl-cleared-${list}:${me.email}`;
+}
+
+function clearedIds(list) {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(clearedKey(list)) || "[]"));
+  } catch (error) {
+    return new Set();
+  }
+}
+
+function decidedLongAgo(request) {
+  return Boolean(request.reviewedAt)
+    && String(request.reviewedAt).slice(0, 10) <= dateToIso(addDays(startOfDay(new Date()), -CLEAR_AFTER_DAYS));
+}
+
+function isCleared(key, request, ids) {
+  return request.status !== "pending" && (ids.has(`${key}:${request.status}`) || decidedLongAgo(request));
+}
+
+// Requests decided over 30 days ago are dropped from what's saved, since they're cleared anyway.
+function saveCleared(list, items, cleared) {
+  const ids = clearedIds(list);
+  for (const { key, request } of items) {
+    if (cleared) ids.add(`${key}:${request.status}`);
+    else ids.delete(`${key}:${request.status}`);
+  }
+  try {
+    localStorage.setItem(clearedKey(list), JSON.stringify([...ids]));
+  } catch (error) {
+    // Without storage, cleared requests come back when the page is reloaded.
+  }
+}
+
+function clearButton(list, items, text, after) {
+  return actionButton(text, async () => {
+    saveCleared(list, items, text !== "Restore");
+    after();
+  });
+}
+
+// "Show cleared (3)" or "Hide cleared", with a reminder that they clear themselves.
+function clearedBar(list, clearable, clearedCount, clearAllText, after) {
+  const bar = el("div", "cleared-bar");
+  if (clearable.length) bar.append(clearButton(list, clearable, clearAllText, after));
+  if (clearedCount) {
+    const toggle = el("button", "link-button", showCleared[list] ? "Hide cleared" : `Show cleared (${clearedCount})`);
+    toggle.type = "button";
+    toggle.addEventListener("click", () => {
+      showCleared[list] = !showCleared[list];
+      after();
+    });
+    bar.append(toggle);
+  }
+  bar.append(el("span", "muted", `Approved and declined requests clear themselves after ${CLEAR_AFTER_DAYS} days.`));
+  return bar;
 }
 
 function markRequestsSeen() {
@@ -4137,14 +4204,31 @@ function renderMyRequests() {
   const holder = document.getElementById("my-requests");
   if (!me) return;
   const unseen = new Set(unseenDecisions().map((item) => item.key));
-  const items = myRequests();
+  const all = myRequests();
+  const ids = clearedIds("mine");
+  const cleared = all.filter((item) => isCleared(item.key, item.request, ids));
+  const items = showCleared.mine ? all : all.filter((item) => !cleared.includes(item));
+  const after = () => {
+    renderMyRequests();
+    updateRequestBadges();
+  };
   const nodes = [el("h3", "", "Your Requests")];
-  if (!items.length) nodes.push(el("p", "muted", "You haven't sent any requests yet."));
-  for (const { key, kind, text, request } of items) {
-    const row = el("div", `request-item request-${request.status}${unseen.has(key) ? " is-new" : ""}`);
+  const clearable = items.filter((item) => item.request.status !== "pending" && !cleared.includes(item));
+  if (clearable.length || cleared.length) nodes.push(clearedBar("mine", clearable, cleared.length, "Clear all decided", after));
+  if (!all.length) nodes.push(el("p", "muted", "You haven't sent any requests yet."));
+  else if (!items.length) nodes.push(el("p", "muted", "Nothing waiting, and your decided requests are cleared."));
+  for (const item of items) {
+    const { key, kind, text, request } = item;
+    const isClearedItem = cleared.includes(item);
+    const row = el("div", `request-item request-${request.status}${unseen.has(key) ? " is-new" : ""}${isClearedItem ? " is-cleared" : ""}`);
     const head = el("div", "request-item-head");
     head.append(el("span", `status-badge status-${request.status}`, STATUS_LABELS[request.status]), el("strong", "", kind));
     if (unseen.has(key)) head.append(el("span", "request-new", "New"));
+    if (request.status !== "pending" && !(isClearedItem && decidedLongAgo(request))) {
+      const button = clearButton("mine", [item], isClearedItem ? "Restore" : "Clear", after);
+      button.classList.add("request-clear");
+      head.append(button);
+    }
     row.append(head, el("div", "", text));
     if (request.status !== "pending" && request.reviewedBy) {
       row.append(el("div", "muted request-by", `${STATUS_LABELS[request.status]} by ${nameFor(request.reviewedBy)}${request.reviewedAt ? ` on ${formatIso(String(request.reviewedAt).slice(0, 10))}` : ""}`));
@@ -4304,15 +4388,17 @@ function renderReviewList() {
   updateReviewBadges();
   if (!isReviewer()) return;
   const items = [
-    ...changeRequests.map((request) => ({ request, row: changeRequestRow, when: String(request.createdAt || "").slice(0, 10) })),
-    ...timeOff.map((request) => ({ request, row: timeOffRow, when: request.from })),
+    ...changeRequests.map((request) => ({ key: `changeRequests/${request.id}`, request, row: changeRequestRow, when: String(request.createdAt || "").slice(0, 10) })),
+    ...timeOff.map((request) => ({ key: `timeOff/${request.id}`, request, row: timeOffRow, when: request.from })),
   ];
+  const ids = clearedIds("review");
+  const cleared = new Set(items.filter((item) => isCleared(item.key, item.request, ids)));
   document.getElementById("review-filter").replaceChildren(...REVIEW_FILTERS.map(([key, label]) => {
     const button = el("button", "pill-tab");
     button.type = "button";
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", String(key === reviewFilter));
-    button.append(label, el("span", "pill-count", String(items.filter((item) => item.request.status === key).length)));
+    button.append(label, el("span", "pill-count", String(items.filter((item) => item.request.status === key && !cleared.has(item)).length)));
     button.addEventListener("click", () => {
       reviewFilter = key;
       renderReviewList();
@@ -4320,13 +4406,29 @@ function renderReviewList() {
     return button;
   }));
   // Waiting requests come soonest first; decided ones most recently decided first.
-  const shown = items.filter((item) => item.request.status === reviewFilter).sort((a, b) => (reviewFilter === "pending"
+  const inTab = items.filter((item) => item.request.status === reviewFilter);
+  const clearedInTab = inTab.filter((item) => cleared.has(item));
+  const shown = inTab.filter((item) => showCleared.review || !cleared.has(item)).sort((a, b) => (reviewFilter === "pending"
     ? a.when.localeCompare(b.when)
     : String(b.request.reviewedAt || "").localeCompare(String(a.request.reviewedAt || "")) || a.when.localeCompare(b.when)));
-  const empty = { pending: "Nothing is waiting for review.", approved: "No approved requests yet.", declined: "No declined requests yet." };
-  document.getElementById("review-list").replaceChildren(...(shown.length
-    ? shown.map((item) => item.row(item.request))
-    : [el("p", "muted empty-note", empty[reviewFilter])]));
+  const empty = { pending: "Nothing is waiting for review.", approved: "No approved requests to show.", declined: "No declined requests to show." };
+  const nodes = shown.length ? shown.map((item) => reviewRow(item, cleared.has(item))) : [el("p", "muted empty-note", empty[reviewFilter])];
+  if (reviewFilter !== "pending") {
+    const clearable = shown.filter((item) => !cleared.has(item));
+    nodes.unshift(clearedBar("review", clearable, clearedInTab.length, `Clear all ${reviewFilter}`, renderReviewList));
+  }
+  document.getElementById("review-list").replaceChildren(...nodes);
+}
+
+// A request in the review list. Decided ones can be cleared, and restored unless they cleared themselves.
+function reviewRow(item, isClearedItem) {
+  const row = item.row(item.request);
+  if (item.request.status === "pending") return row;
+  if (isClearedItem) row.classList.add("is-cleared");
+  if (!(isClearedItem && decidedLongAgo(item.request))) {
+    row.lastChild.append(clearButton("review", [item], isClearedItem ? "Restore" : "Clear", renderReviewList));
+  }
+  return row;
 }
 
 // With trackChanges, saved training is shown filled and anything changed since is marked unsaved,

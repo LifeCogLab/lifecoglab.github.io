@@ -1156,6 +1156,11 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 .request-pending { border-left-color: #d97706; }
 .request-item.is-new { box-shadow: 0 0 0 2px #fecdd3; }
 .request-item-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 3px; }
+.cleared-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 10px; font-size: 13px; }
+.cleared-bar .link-button { padding: 0; font-size: 13px; }
+.request-clear { margin-left: auto; padding: 0; font-size: 13px; }
+.is-cleared { opacity: 0.6; }
+#add-member + .field-note { margin-top: 14px; }
 .request-new { padding: 1px 8px; border-radius: 999px; background: #e11d48; color: #ffffff; font-size: 11px; font-weight: 700; }
 .request-by { margin-top: 3px; font-size: 13px; }
 .request-note { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--surface-muted); }
