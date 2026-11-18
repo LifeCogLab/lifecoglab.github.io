@@ -854,24 +854,48 @@ function checkAssignment(iso, appointment, assignment, data) {
 // line for them to fill in. `when` is the visit's day and times, `parts` its lab and scan times, `requestedStart`
 // any other start time they asked for, and `link` the visit on the site. The site drafts it; the Apps Script sends a
 // sample in its test emails.
-function bookingEmail({ when, parts, requestedStart, link, note }) {
+function bookingEmail({ when, parts, requestedStart, link, note, from }) {
+  const steps = [
+    `1. Confirm the booking on the Lab Calendar and record the scan time${requestedStart ? ", approving or changing the requested start time" : ""}: `,
+    "2. Staff it from the suggested staffing. Approving the staffing sends the staff their calendar invites and emails automatically.",
+    "3. Add the appointment to the lab's appointment calendar in Google Calendar, with the participant ID and other study details. Participant information goes there only, never on the lab's Researcher Portal website.",
+  ];
+  const details = [
+    ...(from ? [`Booked by: ${from}`] : []),
+    parts,
+    ...(requestedStart ? [`Requested start time: ${requestedStart} (needs your approval)`] : []),
+    ...(note ? [`Note: ${note}`] : []),
+  ];
+  // The same email with the visit's date and time in bold and the Screener ID line bold and highlighted, for
+  // pasting into Gmail, which can't take formatting from a link.
+  const escape = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const html = [
+    "A participant is booked for this visit.",
+    "",
+    `Visit: <b>${escape(when)}</b>`,
+    ...details.map(escape),
+    "",
+    '<span style="background-color:#ffff00"><b>Screener ID:</b></span>&nbsp;',
+    "",
+    "For reviewers:",
+    `${escape(steps[0])}<a href="${escape(link)}">${escape(link)}</a>`,
+    ...steps.slice(1).map(escape),
+  ].map((line) => `<div>${line || "<br>"}</div>`).join("");
   return {
     subject: `Booked: ${when}${requestedStart ? " (start time change requested)" : ""}`,
     body: [
       "A participant is booked for this visit.",
       "",
       `Visit: ${when}`,
-      parts,
-      ...(requestedStart ? [`Requested start time: ${requestedStart} (needs your approval)`] : []),
-      ...(note ? [`Note: ${note}`] : []),
+      ...details,
       "",
       "Screener ID: ",
       "",
       "For reviewers:",
-      `1. Confirm the booking on the Lab Calendar and record the scan time${requestedStart ? ", approving or changing the requested start time" : ""}: ${link}`,
-      "2. Staff it from the suggested staffing. Approving the staffing sends the staff their calendar invites and emails automatically.",
-      "3. Add the appointment to the lab's appointment calendar in Google Calendar, with the participant ID and other study details. Participant information goes there only, never on the lab's Researcher Portal website.",
+      `${steps[0]}${link}`,
+      ...steps.slice(1),
     ].join("\n"),
+    html,
   };
 }
 

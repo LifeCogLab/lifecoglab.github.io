@@ -3114,7 +3114,7 @@ function openBookDialog(iso, appointment) {
     el("p", "", partsText(appointment)),
     labeled("Start time", select),
     labeled("Note (optional)", note.node),
-    el("p", "notice", "Don't enter participant information here. After you book, an email to the reviewers opens in Gmail in a new tab, in your own USC account (sign in if asked): add the Screener ID and send it."),
+    el("p", "notice", "Don't enter participant information here. After you book, a new tab shows your email to the reviewers and which account it sends from, then opens it in Gmail: add the Screener ID and send it."),
   ], [
     dialogButton("Mark booked", "primary", async () => {
       const requested = select.value;
@@ -3129,17 +3129,17 @@ function openBookDialog(iso, appointment) {
         }
       }
       // The tab opens now, while the click still counts, since browsers block tabs opened after the save.
-      const draft = openDraftTab();
+      const tab = openDraftTab();
       try {
         await setBooking(appointment, "booked", requested, text);
       } catch (error) {
-        if (draft) draft.close();
+        if (tab) tab.close();
         throw error;
       }
-      const opened = showEmailDraft(draft, bookingEmailUrl(iso, appointment, requested, text));
+      const opened = showEmailSteps(tab, bookingEmailParts(iso, appointment, requested, text));
       const next = opened
-        ? "An email to the reviewers has opened in Gmail: add the Screener ID and send it."
-        : "Your browser blocked the Gmail tab, so use Email booking details to reviewers on your booking.";
+        ? "Your email to the reviewers is ready in the new tab: copy it into Gmail, add the Screener ID and send it."
+        : "Your browser blocked the new tab, so use Email booking details to reviewers on your booking.";
       return requested ? `Booked, asking to start at ${formatTime(requested)}. ${next}` : `Booked. ${next}`;
     }),
     closeButton(),
@@ -3211,47 +3211,125 @@ function visitLink(appointment) {
 // The booker's email to the reviewers, sent from their own USC account. The booker types the Screener ID in, so
 // participant information only ever travels by email and goes on the lab's own Google Calendar, never this site.
 // Cancelled bookings aren't emailed this way: the Apps Script emails lab managers about them automatically.
-function bookingEmailUrl(iso, appointment, requestedStart = "", bookerNote = appointment.bookerNote || "") {
+function bookingEmailParts(iso, appointment, requestedStart = "", bookerNote = appointment.bookerNote || "") {
   // A booker's email goes to the lab managers only, never the PI.
   const to = reviewerContacts.filter((reviewer) => reviewer.role === "reviewer").map((reviewer) => reviewer.email).join(",");
-  const { subject, body } = bookingEmail({
-    when: `${formatIsoWithDay(iso)}, ${visitTimesText(appointment)}`,
-    parts: partsText(appointment),
-    requestedStart: requestedStart ? formatTime(requestedStart) : "",
-    link: visitLink(appointment),
-    note: bookerNote,
-  });
-  // Gmail in the browser rather than the computer's mail app, since bookers on the lab computer sign in on the web.
-  // Gmail alone quietly falls back to whoever is signed in, so the draft goes through Google's account chooser for
-  // the booker's own account first: it asks them to sign in if they aren't, then opens the draft in that account.
-  // (A prefilled Gmail draft opens on its own page, without the account picture, so it can't be checked there.)
-  const draft = `https://mail.google.com/mail/u/${encodeURIComponent(me.email)}/?view=cm&fs=1&to=${encodeURIComponent(to)}`
-    + `&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  return {
+    to,
+    ...bookingEmail({
+      when: `${formatIsoWithDay(iso)}, ${visitTimesText(appointment)}`,
+      parts: partsText(appointment),
+      requestedStart: requestedStart ? formatTime(requestedStart) : "",
+      link: visitLink(appointment),
+      note: bookerNote,
+      from: me.name ? `${me.name} (${me.email})` : me.email,
+    }),
+  };
+}
+
+// Gmail in the browser rather than the computer's mail app, since bookers on the lab computer sign in on the web.
+// Gmail alone quietly falls back to whoever is signed in, so the draft goes through Google's account chooser for
+// the booker's own account first: it asks them to sign in if they aren't, then opens the draft in that account.
+// A link can only fill in plain text, so when the formatted email was copied the body is left for them to paste.
+function gmailDraftUrl(email, pasting) {
+  const draft = `https://mail.google.com/mail/u/${encodeURIComponent(me.email)}/?view=cm&fs=1&to=${encodeURIComponent(email.to)}`
+    + `&su=${encodeURIComponent(email.subject)}&body=${encodeURIComponent(pasting ? "" : email.body)}`;
   return `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(me.email)}&continue=${encodeURIComponent(draft)}`;
 }
 
 function bookingEmailLink(iso, appointment) {
-  const link = el("a", "secondary small button-link", "Email booking details to reviewers");
-  link.href = bookingEmailUrl(iso, appointment, appointment.requestedStart || "");
-  link.target = "_blank";
-  link.rel = "noopener";
-  return link;
+  const button = el("button", "secondary small", "Email booking details to reviewers");
+  button.type = "button";
+  button.addEventListener("click", () => {
+    showEmailSteps(openDraftTab(), bookingEmailParts(iso, appointment, appointment.requestedStart || ""));
+  });
+  return button;
 }
 
-// A blank tab for the booker's Gmail draft, or null if the browser blocks it. If it's blocked, the button on the
-// visit opens the same draft.
+// A blank tab for the booker's email, or null if the browser blocks it. If it's blocked, the button on the visit
+// opens the same email.
 function openDraftTab() {
   if (typeof window.open !== "function") return null;
-  const draft = window.open("", "_blank");
-  if (draft && draft.document) draft.document.title = "Opening Gmail…";
-  return draft || null;
+  const tab = window.open("", "_blank");
+  if (tab && tab.document) {
+    tab.document.title = "Saving your booking…";
+    tab.document.body.textContent = "Saving your booking…";
+  }
+  return tab || null;
 }
 
-function showEmailDraft(draft, url) {
-  if (!draft || draft.closed) return false;
-  draft.opener = null;
-  draft.location.href = url;
+// Fills the new tab with the email as it will read, the account it sends from and how to send it. Gmail's own draft
+// page doesn't show the account, so it's shown here first. Its button copies the formatted email (so the bold and
+// highlighting survive) and opens Gmail; if copying fails, Gmail opens with the plain email already in it.
+function showEmailSteps(tab, email) {
+  if (!tab || tab.closed) return false;
+  tab.opener = null;
+  const page = tab.document;
+  const paste = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "") ? "⌘V" : "Ctrl+V";
+  page.title = "Email the Lab Managers";
+  page.body.innerHTML = `
+    <style>
+      body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #222; background: #fff; margin: 0; padding: 24px 16px; }
+      main { max-width: 680px; margin: 0 auto; }
+      h1 { font-size: 22px; margin: 0 0 12px; }
+      .from { background: #fdf0f4; border: 1px solid #e7b6c6; border-radius: 8px; padding: 10px 14px; }
+      ol { padding-left: 22px; }
+      .preview { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin: 16px 0; font: 14px/1.45 Arial, sans-serif; }
+      .preview .subject { color: #555; margin-bottom: 10px; }
+      button { font: inherit; font-weight: 600; color: #fff; background: #990000; border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer; }
+      .status { color: #555; }
+    </style>
+    <main>
+      <h1>Email the Lab Managers</h1>
+      <p class="from">You're sending this from <strong></strong>. If that account isn't signed in, Google asks you to sign in to it first.</p>
+      <ol>
+        <li>Click <strong>Copy email and open Gmail</strong>.</li>
+        <li>In Gmail, click in the message box and press <strong>${paste}</strong> to paste the email.</li>
+        <li>Type the Screener ID after <strong>Screener ID:</strong> and send it.</li>
+      </ol>
+      <button type="button">Copy email and open Gmail</button>
+      <p class="status" hidden></p>
+      <div class="preview"><div class="subject"></div><div class="message"></div></div>
+    </main>`;
+  page.querySelector(".from strong").textContent = me.email;
+  page.querySelector(".subject").textContent = `To: ${email.to}  ·  Subject: ${email.subject}`;
+  const message = page.querySelector(".message");
+  message.innerHTML = email.html;
+  const status = page.querySelector(".status");
+  page.querySelector("button").addEventListener("click", async () => {
+    const copied = await copyFormatted(tab, message, email);
+    status.hidden = false;
+    status.textContent = copied ? `Copied. In Gmail, click in the message box and press ${paste}.` : "Couldn't copy, so Gmail opens with the email already in it.";
+    tab.location.href = gmailDraftUrl(email, copied);
+  });
   return true;
+}
+
+// Copies the email with its formatting, from the tab the booker just clicked in.
+async function copyFormatted(tab, message, email) {
+  try {
+    if (tab.navigator.clipboard && tab.ClipboardItem) {
+      await tab.navigator.clipboard.write([new tab.ClipboardItem({
+        "text/html": new tab.Blob([email.html], { type: "text/html" }),
+        "text/plain": new tab.Blob([email.body], { type: "text/plain" }),
+      })]);
+      return true;
+    }
+  } catch (error) {
+    // Falls back to copying the preview below.
+  }
+  try {
+    const range = tab.document.createRange();
+    range.selectNodeContents(message);
+    const selection = tab.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const copied = tab.document.execCommand("copy");
+    selection.removeAllRanges();
+    return copied;
+  } catch (error) {
+    return false;
+  }
 }
 
 // Asks the Apps Script to update LCL Visits and send any cancellation emails now, rather than at its next 10-minute
