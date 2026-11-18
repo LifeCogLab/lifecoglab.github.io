@@ -3222,11 +3222,12 @@ function bookingEmailUrl(iso, appointment, requestedStart = "", bookerNote = app
     note: bookerNote,
   });
   // Gmail in the browser rather than the computer's mail app, since bookers on the lab computer sign in on the web.
-  // Naming the booker's account in the path opens the draft in it even when someone else's is signed in too, and
-  // asks them to sign in if it isn't. (A prefilled Gmail draft always opens on its own page, without the account
-  // picture, so the account is picked for them rather than left for them to check.)
-  return `https://mail.google.com/mail/u/${encodeURIComponent(me.email)}/?view=cm&fs=1&to=${encodeURIComponent(to)}`
+  // Gmail alone quietly falls back to whoever is signed in, so the draft goes through Google's account chooser for
+  // the booker's own account first: it asks them to sign in if they aren't, then opens the draft in that account.
+  // (A prefilled Gmail draft opens on its own page, without the account picture, so it can't be checked there.)
+  const draft = `https://mail.google.com/mail/u/${encodeURIComponent(me.email)}/?view=cm&fs=1&to=${encodeURIComponent(to)}`
     + `&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  return `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(me.email)}&continue=${encodeURIComponent(draft)}`;
 }
 
 function bookingEmailLink(iso, appointment) {
