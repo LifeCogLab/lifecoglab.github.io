@@ -173,6 +173,12 @@ function isDayOff(iso) {
   return academicDayOff(iso, events);
 }
 
+// Days shown in red. The Lab, Staffing and availability calendars go by USC staff holidays, so class holidays and
+// breaks (such as Veterans Day) aren't marked; the other views go by the academic calendar.
+function shownAsDayOff(iso) {
+  return isLabView() || isAvailabilityView() || isAppointmentsView() ? Boolean(staffHolidayOn(iso, staffHolidays)) : isDayOff(iso);
+}
+
 function classesMeet(iso) {
   return classesMeetOn(iso, semesters, events);
 }
@@ -398,7 +404,7 @@ function renderWeek() {
 
   const columns = weekDates.map((date) => {
     const iso = dateToIso(date);
-    const offDay = labView || availabilityView || appointmentsView ? Boolean(staffHolidayOn(iso, staffHolidays)) : isDayOff(iso);
+    const offDay = shownAsDayOff(iso);
     const column = el("div", `day${sameDay(date, today) ? " today" : ""}${offDay ? " day-off" : ""}`);
     if (labView) renderLabColumn(column, iso);
     else if (appointmentsView) renderAppointmentsColumn(column, iso);
@@ -3443,6 +3449,7 @@ function setCalendarView(view) {
   setCalendarStatus("");
   renderFilters();
   renderWeek();
+  renderMiniMonth();
 }
 
 // The week calendar is one block of the page, moved into whichever page shows it.
@@ -3479,7 +3486,7 @@ function renderMiniMonth() {
     cell.type = "button";
     if (date.getMonth() !== miniMonth) cell.classList.add("outside");
     if (date >= weekStart && date <= weekEnd) cell.classList.add("in-week");
-    if (isDayOff(dateToIso(date))) cell.classList.add("day-off");
+    if (shownAsDayOff(dateToIso(date))) cell.classList.add("day-off");
     if (sameDay(date, today)) cell.classList.add("today");
     cell.setAttribute("aria-label", date.toDateString());
     cell.addEventListener("click", () => goTo(date));
