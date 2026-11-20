@@ -21,6 +21,7 @@ const REVIEWER_EMAILS = [
   { key: "updates", label: "Saved schedule changes", help: "Changes and time off that Grad Students/Post-Docs save without review." },
   { key: "cancellations", label: "Cancellations", help: "Straight away when a booking is cancelled (the visit stays open to rebook), or a booked or staffed visit is cancelled. Bookings themselves come from the booker's own email." },
   { key: "scanReminders", label: "Scan booking reminder", help: "At 8:30 AM each morning, which newly opened visit needs its scan booked." },
+  { key: "unbookedSlots", label: "Unbooked visits", help: "At 8:30 AM, any open participant slot 3 days away that still isn't booked." },
   { key: "missingSchedules", label: "Missing class schedules", help: "A week before a semester starts, which RAs still haven't added their class schedule." },
   { key: "websiteUpdates", label: "Website updates", help: "When the USC academic calendar or staff holidays need the next year's dates added, then monthly until they're in." },
   { key: "celebrations", label: "Birthdays and graduations", help: "At 8:30 AM, 1 month, 1 week and 1 day before, and on the day, with their favorite color, dessert and dietary restrictions/allergies." },

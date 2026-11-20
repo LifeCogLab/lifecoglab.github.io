@@ -34,7 +34,7 @@ service cloud.firestore {
         : (member.role == 'grad' ? (member.get('title', '') == 'Post-Doc' ? 'Post-Doc' : 'PhD Student') : 'RA'));
     }
     function emailKinds() {
-      return ['requests', 'updates', 'bookings', 'cancellations', 'scanReminders', 'celebrations', 'missingSchedules', 'websiteUpdates'];
+      return ['requests', 'updates', 'bookings', 'cancellations', 'scanReminders', 'unbookedSlots', 'celebrations', 'missingSchedules', 'websiteUpdates'];
     }
     function owns(data) {
       return isMember() && data.ownerEmail == email();

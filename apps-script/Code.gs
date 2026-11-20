@@ -47,7 +47,18 @@ const CONFIG = {
 // rebooked. Visits from before booking moved to the website keep the calendar's own color.
 const BOOKING_COLORS = { open: "8", booked: "9", confirmed: "10", rebooking: "6" };
 const BOOKING_TITLES = { open: "Open", booked: "Booked", confirmed: "Confirmed", rebooking: "Rebooking" };
-const TITLE_MARKS = { ready: "✅", tight: "🟡", problem: "⚠️" };
+// ❗ for a visit that can't be fully staffed, so it isn't mistaken for the ⚠️ booking flags.
+const TITLE_MARKS = { ready: "✅", tight: "🟡", problem: "❗" };
+const CANCELED_APT = "[CANCELED APT]";
+
+// An open slot coming up soon starts its LCL Avail Visits title with a warning, more urgent the closer it is: within
+// 2 weeks, within a week, and 3 days or less. Days are calendar days, not business days.
+function bookingUrgency(days) {
+  if (days <= 3) return "⚠️⚠️⚠️ [BOOK NOW]";
+  if (days <= 7) return "⚠️⚠️ [BOOK ASAP]";
+  if (days <= 14) return "⚠️ [BOOK ASAP]";
+  return "";
+}
 
 const RULE_NAMES = [
   "appointmentsOn", "evaluateVisitSlot", "evaluateManagers", "managerCandidates", "normalizeSkills", "isOffHours",
@@ -547,12 +558,13 @@ function cancellationsEmail(rules, items) {
   return { subject, lines };
 }
 
-// At 8:30 AM: which scan to book, upcoming birthdays and graduations, class and finals schedule reminders for RAs,
-// and whether the USC calendars need adding to.
+// At 8:30 AM: which scan to book, open slots 3 days away, upcoming birthdays and graduations, class and finals
+// schedule reminders for RAs, and whether the USC calendars need adding to.
 function dailyVisits() {
   const site = loadSite();
   const profiles = listCollection("profiles");
   remindScanBooking(site);
+  remindUnbooked(site, new Date());
   remindCelebrations(site, profiles, new Date());
   remindLabMembers(site, profiles, listCollection("changeRequests"), new Date());
   remindCalendarData(site, new Date());
@@ -572,6 +584,45 @@ function scanReminderEmail(rules, iso, visit) {
       `If you get a different time than ${dateMark(`${emailTime(visit.scan.start)} – ${emailTime(visit.scan.end)}`)}, ${bold(underline("change the slot's scan time"))} on the Lab Calendar before anyone books it: ${CONFIG.siteUrl}#visit=${rules.visitKey(visit)}`,
     ],
   };
+}
+
+// Open slots 3 calendar days from today that still aren't booked, so lab managers can fill them or cancel them.
+function unbookedSoon(rules, appointments, holidays, today) {
+  const iso = isoOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3));
+  if (iso < rules.BOOKING_STARTS) return [];
+  return visitsOn(rules, iso, appointments, holidays, rules.defaultVisitsThrough(today))
+    .filter((appointment) => rules.visitStatus(appointment) === "open")
+    .map((appointment) => ({ id: `${rules.visitKey(appointment)}:unbooked`, owner: null, iso, appointment }));
+}
+
+// Titled by the scan's day, such as "CANCEL/Rebook DNI Res on Fri 11/27", since its DNI scan reservation may need
+// cancelling if nobody books it.
+function unbookedEmail(rules, items) {
+  const [{ iso }] = items;
+  const one = items.length === 1;
+  const [, month, day] = iso.split("-").map(Number);
+  const weekday = emailDateWithDay(iso).split(",")[0];
+  const scans = items.filter(({ appointment }) => appointment.scan);
+  return {
+    subject: `CANCEL/Rebook DNI Res on ${weekday} ${month}/${day}`,
+    lines: [
+      `${one ? "This participant slot is" : "These participant slots are"} 3 days away and ${bold(underline("still not booked"))}:`,
+      "",
+      ...items.flatMap(({ appointment }) => [
+        `• ${dateMark(`${emailDateWithDay(iso)}, ${visitTimesForEmail(rules, appointment)}`)}${appointment.booking === "rebooking" ? ` ${CANCELED_APT}` : ""}${appointment.scan ? `, scan ${emailTime(appointment.scan.start)} – ${emailTime(appointment.scan.end)}` : ""}`,
+        `  Book it, or cancel it on the Lab Calendar if it won't be filled: ${CONFIG.siteUrl}#visit=${rules.visitKey(appointment)}`,
+      ]),
+      ...(scans.length ? ["", `If it won't be filled, ${bold(underline(`cancel the DNI scan reservation${scans.length > 1 ? "s" : ""}`))} too: ${CONFIG.scanBookingUrl}`] : []),
+    ],
+  };
+}
+
+function remindUnbooked(site, today) {
+  const items = unbookedSoon(site.rules, site.appointments, site.holidays, today);
+  if (!items.length) return 0;
+  const emailed = emailReviewers(site.rules, site.members, "unbookedSlots", items, (theirs) => unbookedEmail(site.rules, theirs));
+  console.log(`${items.length} open slot(s) 3 days away; sent ${emailed} email(s).`);
+  return emailed;
 }
 
 // The day that opened at 8:00 AM, 60 days ahead, needs its scan booked.
@@ -1055,7 +1106,9 @@ function reasonsFor(rules, result) {
 }
 
 // One event per visit, for the whole visit. Its color is its booking; its title and description say whether each part
-// can be staffed, who's available, and whether it's staffed. Kept free of Google services so it can be tested.
+// can be staffed, who's available, and whether it's staffed. Confirmed visits are left off, since they're on LCL
+// Confirmed Visits; one whose booking is cancelled comes back, open to rebook, marked [CANCELED APT]. Open slots in the
+// next 2 weeks are marked to book soon. Kept free of Google services so it can be tested.
 function buildVisitEvents(rules, data, appointments, holidays, today, staffing = []) {
   const events = [];
   const through = rules.defaultVisitsThrough(today);
@@ -1064,6 +1117,7 @@ function buildVisitEvents(rules, data, appointments, holidays, today, staffing =
     const iso = isoOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset));
     const visits = visitsOn(rules, iso, appointments, holidays, through);
     visits.forEach((appointment, index) => {
+      if (rules.visitStatus(appointment) === "confirmed") return;
       const key = rules.visitKey(appointment);
       const window = rules.visitWindow(appointment);
       const parts = ["lab", "scan"].filter((kind) => appointment[kind]).map((kind) => ({ kind, result: rules.evaluateVisitSlot(iso, appointment[kind], kind, data) }));
@@ -1097,9 +1151,11 @@ function buildVisitEvents(rules, data, appointments, holidays, today, staffing =
         if (check.issues.length) lines.push("Staffing conflicts:", ...check.issues.map((issue) => `• ${issue}`));
       }
       lines.push("", `Staff or change this visit: ${CONFIG.siteUrl}#visit=${key}`);
+      const flags = [...(booking === "open" || booking === "rebooking" ? [bookingUrgency(offset)] : []), ...(booking === "rebooking" ? [CANCELED_APT] : [])].filter(Boolean);
       events.push({
         key: `${key}:visit`,
-        title: `${TITLE_MARKS[state]}${doc && check.issues.length ? " ⚠️" : ""} ${notes.length ? `${rules.SEE_NOTE} ` : ""}${seeTime ? `${rules.SEE_TIME} ` : ""}${short ? `${rules.SHORTENED_SCAN} ` : ""}${booking ? `${BOOKING_TITLES[booking]}: ` : ""}Participant Visit${visits.length > 1 ? ` ${index + 1}` : ""}${partsLabel ? ` (${partsLabel})` : ""}${tail.length ? ` · ${tail.join(", ")}` : ""}`,
+        // A cancelled booking waiting to be rebooked has no ✅, which could read as all set; 🟡 and ❗ still show.
+        title: `${flags.length ? `${flags.join(" ")} ` : ""}${[booking === "rebooking" && state === "ready" ? "" : TITLE_MARKS[state], doc && check.issues.length ? "⚠️" : ""].filter(Boolean).map((mark) => `${mark} `).join("")}${notes.length ? `${rules.SEE_NOTE} ` : ""}${seeTime ? `${rules.SEE_TIME} ` : ""}${short ? `${rules.SHORTENED_SCAN} ` : ""}${booking ? `${BOOKING_TITLES[booking]}: ` : ""}Participant Visit${visits.length > 1 ? ` ${index + 1}` : ""}${partsLabel ? ` (${partsLabel})` : ""}${tail.length ? ` · ${tail.join(", ")}` : ""}`,
         description: shortPhleb(lines.join("\n")),
         start: dateAtMinutes(iso, window.start),
         end: dateAtMinutes(iso, window.end),
@@ -1173,11 +1229,14 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
 
     const scanPeople = [...new Set([scan.lead, scan.support, scan.wanding, ...(appointment.lab ? [] : doc.managers || [])].filter(Boolean))];
     if (appointment.scan) {
+      // Wanding/taping isn't named as such: whoever does it is the Third scanner, unless they're already the lead or
+      // second scanner. With no one doing it when it's needed, the description says a third scanner is needed.
       const wandingNeeded = appointment.scan.wandingRequired !== false;
+      const third = scan.wanding && scan.wanding !== scan.lead && scan.wanding !== scan.support ? scan.wanding : "";
       const roles = [
         ["Lead scanner", scan.lead ? nameOf(scan.lead) : ""],
         ["Second scanner", scan.support ? nameOf(scan.support) : ""],
-        ...(wandingNeeded ? [["Wanding/Taping", scan.wanding ? nameOf(scan.wanding) : ""]] : []),
+        ...(third ? [["Third scanner", nameOf(third)]] : []),
       ];
       events.push({
         key: `${doc.visitKey}:scan`,
@@ -1187,7 +1246,7 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
           ...unusualLines(rules, appointment, "scan", staffed),
           ...many,
           ...roleLines(roles),
-          ...(wandingNeeded ? [] : ["Wanding/taping isn't needed for this visit."]),
+          ...(wandingNeeded && !scan.wanding ? ["Third scanner needed for female participant"] : []),
         ].join("\n"),
         start: dateAt(doc.date, appointment.scan.start),
         end: dateAt(doc.date, appointment.scan.end),
@@ -1392,6 +1451,7 @@ function sendTestEmails() {
   toReviewers(cancellationsEmail(rules, [{ key: "default-2027-01-12", kind: "booking", visit: { date: "2027-01-12", times: "9:00 AM – 1:00 PM", by: "Jordan", seeTime: false } }]));
   toReviewers(cancellationsEmail(rules, [{ key: "x", kind: "visit", visit: { date: "2027-01-14", times: "9:00 AM – 1:00 PM", seeTime: true } }]));
   toReviewers(scanReminderEmail(rules, "2027-01-12", usual));
+  toReviewers(unbookedEmail(rules, [{ iso: "2027-01-12", appointment: usual }, { iso: "2027-01-12", appointment: { ...usual, booking: "rebooking" } }]));
   toReviewers(celebrationsEmail([{ iso: "2026-12-10", kind: "birthday", name: "Jordan Lee", profile, when: "in 1 week" }]));
   toReviewers(celebrationsEmail([
     { iso: "2026-12-10", kind: "birthday", name: "Jordan Lee", profile, when: "today" },
