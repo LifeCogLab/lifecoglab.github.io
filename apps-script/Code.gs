@@ -1129,7 +1129,7 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
     // A cancelled visit isn't listed, so its events are removed.
     if (index === -1) continue;
     const appointment = visits[index];
-    // Kept short: the title is "Study Visit (names)" for the lab staff or "Scan Reservation (names)" for the scan staff,
+    // Kept short: the title is "Study Visit (names)" for the lab staff or "DNI Res (names)" for the scan staff,
     // each person once, and the description is who does what, without times (the event's own times say when).
     const many = visits.length > 1 ? [`👥 Visit ${index + 1} of ${visits.length} that day`, ""] : [];
     const window = rules.visitWindow(appointment);
@@ -1181,7 +1181,7 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
       ];
       events.push({
         key: `${doc.visitKey}:scan`,
-        title: titleFor("Scan Reservation", roles.map(([, name]) => name).filter(Boolean), "scan"),
+        title: titleFor("DNI Res", roles.map(([, name]) => name).filter(Boolean), "scan"),
         description: [
           ...noteLines("scan"),
           ...unusualLines(rules, appointment, "scan", staffed),
