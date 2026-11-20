@@ -21,13 +21,13 @@ const CONFIG = {
   celebrationsCalendarName: "LCL Birthdays & Graduations",
   daysAhead: 60,
   timeZone: "America/Los_Angeles",
-  // While this is false, assigned staff are only listed in the Confirmed Visits events, not added as guests, and
-  // aren't emailed. Only reviewers get emails. Set it to true to add staff as guests and email them about their visits.
-  // Google itself never emails guests: the script sends each person their own email instead.
-  inviteStaff: false,
-  // While this is false, RAs and other lab members aren't emailed either: no semester or finals schedule reminders,
-  // and no word when a request of theirs is reviewed. Turn it on with inviteStaff once testing is done.
-  emailLabMembers: false,
+  // Adds assigned staff as guests on their Confirmed Visits events and emails them about their visits. Set it to false
+  // to only list staff in the events and email nobody but reviewers. Google itself never emails guests: the script
+  // sends each person their own email instead. Visits staffed before it was first turned on are never emailed about.
+  inviteStaff: true,
+  // Emails RAs and other lab members: semester and finals schedule reminders, and word when a request of theirs is
+  // reviewed. Set it to false to stop them.
+  emailLabMembers: true,
   // Which semesters RAs are asked to send a class schedule for. Summer is left out, since most RAs don't take
   // summer classes; add "summer" to ask for those too.
   scheduleSemesters: ["spring", "fall"],

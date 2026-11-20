@@ -83,7 +83,7 @@ const BOOKING_STARTS = "2026-11-05";
 // Emails the Apps Script sends to lab members other than reviewers. These only tell the site what to say when it asks
 // who to email; the switches that actually send them are inviteStaff and emailLabMembers in apps-script/Code.gs, so
 // keep the two in step.
-const EMAIL_SWITCHES = { staff: false, labMembers: false };
+const EMAIL_SWITCHES = { staff: true, labMembers: true };
 
 // A lab portion can need all three lab roles (the usual), or just some of them for participants who only come in for
 // part of it. `roles` on a lab portion lists the ones it needs; without it, it needs all three.
