@@ -43,7 +43,7 @@ The values in `firebase-config.js` identify the project and are meant to be publ
 Setup:
 
 1. Create a project in the [Firebase console](https://console.firebase.google.com/) and add a Web app. Copy its values into `firebase-config.js`.
-2. Under **Authentication > Sign-in method**, enable **Google**. Under **Authentication > Settings > Authorized domains**, add `dbelkind.github.io`.
+2. Under **Authentication > Sign-in method**, enable **Google**. Under **Authentication > Settings > Authorized domains**, add `lifecoglab.github.io`.
 3. Create a **Firestore Database** in production mode, and paste in `firestore.rules` under **Rules**.
 4. Add the first reviewer by hand: create a collection named `members` and a document whose ID is their Google email in lowercase, with the string fields `name` and `role` set to `reviewer`. Add everyone else from the site.
 

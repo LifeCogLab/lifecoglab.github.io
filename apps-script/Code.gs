@@ -15,7 +15,7 @@
 
 const CONFIG = {
   projectId: "lab-schedules",
-  siteUrl: "https://dbelkind.github.io/lcl_portal/",
+  siteUrl: "https://lifecoglab.github.io/",
   visitsCalendarName: "LCL Avail Visits",
   confirmedCalendarName: "LCL Confirmed Visits",
   celebrationsCalendarName: "LCL Birthdays & Graduations",

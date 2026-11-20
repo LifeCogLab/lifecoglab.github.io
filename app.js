@@ -3206,7 +3206,7 @@ function bookedVisits() {
     .sort((a, b) => a.iso.localeCompare(b.iso) || visitWindow(a.appointment).start - visitWindow(b.appointment).start);
 }
 
-const PUBLISHED_SITE = "https://dbelkind.github.io/lcl_portal/";
+const PUBLISHED_SITE = "https://lifecoglab.github.io/";
 
 // A link that opens a visit's staffing on the site, for reviewers.
 function visitLink(appointment) {
