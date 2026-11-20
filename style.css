@@ -879,7 +879,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 .chip-shortened { background: #fee2e2; color: #991b1b; font-weight: 700; }
 .chip-booked { background: var(--accent-soft); color: #0b5a54; }
 .chip-rebooking { background: #ffedd5; color: #9a3412; }
-.chip-open { background: var(--surface-muted); color: var(--muted); }
+.chip-open { background: #fef08a; color: #713f12; }
 .chip-staffed { background: #dcfce7; color: #166534; }
 .chip-conflict { background: #fee2e2; color: #991b1b; }
 
