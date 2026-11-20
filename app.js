@@ -2771,7 +2771,9 @@ function renderAppointmentsColumn(column, iso) {
     const title = status === "open"
       ? (appointment.booking === "rebooking" ? "Open Slot · Booking Cancelled" : "Open Participant Slot")
       : status === "booked" ? "BOOKED · Waiting for Confirmation" : `Scheduled · ${part === "lab" ? "Lab" : "Scan"}`;
-    const heading = el("strong", "", `${item.number ? `Visit ${item.number} · ` : ""}${title}`);
+    // A scheduled lab or scan with a note for its staff starts with 📝 [SEE NOTE], as on the staff's calendar events.
+    const noted = part && appointment[part === "lab" ? "labNote" : "scanNote"] ? `${SEE_NOTE} ` : "";
+    const heading = el("strong", "", `${noted}${item.number ? `Visit ${item.number} · ` : ""}${title}`);
     const time = el(short ? "span" : "div", "slot-time", `${formatTime(item.start)} – ${formatTime(item.end)}`);
     if (short) heading.append(" ", time);
     node.append(heading, ...(short ? [] : [time]));
