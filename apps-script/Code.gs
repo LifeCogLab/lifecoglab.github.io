@@ -1224,6 +1224,8 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
         start: dateAtMinutes(doc.date, window.start),
         end: dateAtMinutes(doc.date, window.end),
         attendees: visitPeople,
+        // Lab managers who are only managing this visit, not also staffing a lab role.
+        managersOnly: (doc.managers || []).filter((email) => ![lab.dryLab, lab.phlebotomy, lab.wetLab].includes(email)),
       });
     }
 
@@ -1251,6 +1253,7 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
         start: dateAt(doc.date, appointment.scan.start),
         end: dateAt(doc.date, appointment.scan.end),
         attendees: scanPeople,
+        managersOnly: appointment.lab ? [] : (doc.managers || []).filter((email) => ![scan.lead, scan.support, scan.wanding].includes(email)),
       });
     }
   }
@@ -1259,15 +1262,40 @@ function buildConfirmedEvents(rules, data, appointments, holidays, staffing, tod
 
 // Staff are only added as guests once CONFIG.inviteStaff is turned on. Until then they're listed in the description
 // alone. Google never emails guests itself; notifyStaff sends each person their own email.
+// Someone the calendar itself is shared with (or who owns it) already sees every event, so when they're only lab
+// managing a visit they aren't added as a guest too. They're still invited to anything they're staffing (dry lab,
+// phlebotomy, wet lab or scanning), and their staff emails come as usual.
 function syncConfirmed(site = loadSite(), staffing = listCollection("staffing"), today = new Date()) {
-  const wanted = buildConfirmedEvents(site.rules, site.data, site.appointments, site.holidays, staffing, today)
-    .map((event) => (CONFIG.inviteStaff ? event : { ...event, attendees: [] }));
   const calendarId = calendarIdFor("confirmedCalendarId", CONFIG.confirmedCalendarName,
     "Staffed participant visits, from the Lifespan Cognition Lab Researcher Portal. Filled in automatically every 10 minutes.");
+  const seesCalendar = calendarViewers(calendarId);
+  const wanted = buildConfirmedEvents(site.rules, site.data, site.appointments, site.holidays, staffing, today)
+    .map(({ managersOnly = [], ...event }) => ({
+      ...event,
+      attendees: CONFIG.inviteStaff ? (event.attendees || []).filter((email) => !(managersOnly.includes(email) && seesCalendar.has(email.toLowerCase()))) : [],
+    }));
   const changes = writeCalendar(calendarId, wanted, today, 120);
   if (changes.created || changes.updated || changes.deleted) {
     console.log(`Confirmed Visits synced: ${changes.created} added, ${changes.updated} updated, ${changes.deleted} removed.`);
   }
+}
+
+// Who the calendar is shared with, by email, including its owner. If the list can't be read, nobody is left out.
+function calendarViewers(calendarId) {
+  const viewers = new Set();
+  try {
+    let pageToken;
+    do {
+      const page = Calendar.Acl.list(calendarId, { pageToken });
+      for (const rule of page.items || []) {
+        if (rule.scope && rule.scope.type === "user" && ["reader", "writer", "owner"].includes(rule.role)) viewers.add(String(rule.scope.value).toLowerCase());
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+  } catch (error) {
+    console.log(`Couldn't read who ${CONFIG.confirmedCalendarName} is shared with (${error.message}), so everyone staffed is invited.`);
+  }
+  return viewers;
 }
 
 // --- Emailing staff ---

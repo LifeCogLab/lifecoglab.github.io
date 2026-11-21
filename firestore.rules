@@ -44,7 +44,9 @@ service cloud.firestore {
     }
     function validAvailability(data) {
       return data.keys().hasAll(['ownerEmail', 'type', 'days', 'start', 'end', 'from'])
-        && data.keys().hasOnly(['ownerEmail', 'type', 'days', 'start', 'end', 'from', 'to', 'semester', 'note'])
+        && data.keys().hasOnly(['ownerEmail', 'type', 'days', 'start', 'end', 'from', 'to', 'semester', 'note', 'skipDates'])
+        // Days a weekly entry was removed for, one at a time.
+        && (!('skipDates' in data) || (data.skipDates is list && data.skipDates.size() <= 200))
         && data.type in ['class', 'conflict']
         && data.days is list && data.days.size() > 0
         && data.start is string && data.end is string && data.start < data.end
@@ -283,7 +285,9 @@ service cloud.firestore {
 
     // Who is staffing each visit. Only reviewers see it; the Apps Script turns it into calendar events.
     match /staffing/{key} {
-      allow read, delete: if isReviewer();
+      // Everyone in the lab can see who's staffing each visit; only reviewers change it.
+      allow read: if isMember();
+      allow delete: if isReviewer();
       allow create, update: if isReviewer()
         && request.resource.data.keys().hasOnly(['date', 'visitKey', 'lab', 'scan', 'managers', 'approvedBy', 'approvedAt'])
         && request.resource.data.visitKey == key

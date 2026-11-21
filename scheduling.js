@@ -479,7 +479,7 @@ function classesMeetOn(iso, semesters, events) {
 
 function blockOverlaps(block, email, iso, startMinutes, endMinutes, data) {
   return block.ownerEmail === email && block.from <= iso && (!block.to || iso <= block.to) && block.days.includes(WEEKDAY_NAMES[isoWeekday(iso)]) &&
-    (block.type !== "class" || classesMeetOn(iso, data.semesters, data.events)) &&
+    !(block.skipDates || []).includes(iso) && (block.type !== "class" || classesMeetOn(iso, data.semesters, data.events)) &&
     timeToMinutes(block.start) < endMinutes && startMinutes < timeToMinutes(block.end);
 }
 

@@ -188,7 +188,7 @@ function blocksOn(date) {
   const dayName = DAYS[(date.getDay() + 6) % 7];
   return blocks.filter((block) =>
     block.type !== "ooo" && showsBlock(block) && block.from <= iso && (!block.to || iso <= block.to) &&
-    block.days.includes(dayName) && (block.type !== "class" || classesMeet(iso)));
+    block.days.includes(dayName) && !(block.skipDates || []).includes(iso) && (block.type !== "class" || classesMeet(iso)));
 }
 
 function outOfOfficeOn(iso) {
@@ -607,8 +607,8 @@ function renderUnavailabilityColumn(column, date, colorOf) {
       start: block.start,
       end: block.end,
       draggable: !block.ghost && canEditEntriesOf(block.ownerEmail),
-      onOpen: () => (block.ghost ? openRequestDialog(block.requestId) : openEntryDialog(block)),
-      onCommit: (start, end) => openEntryDialog(block, { start, end }),
+      onOpen: () => (block.ghost ? openRequestDialog(block.requestId) : openEntryDialog(block, null, dateToIso(date))),
+      onCommit: (start, end) => openEntryDialog(block, { start, end }, dateToIso(date)),
     });
     column.append(entry);
   }
@@ -698,6 +698,35 @@ function bookingFields(status, requestedStart = "", bookerNote = "") {
 
 function staffingFor(appointment) {
   return staffing.find((doc) => doc.visitKey === visitKey(appointment)) || null;
+}
+
+// Who's staffing one part of a visit, shown to the whole lab on the Lab Calendar, such as "📝 Ann · 🩸 Ben · 🧪 Cat ·
+// 👩‍💻 Dana" for the lab or "🧠 Ann, Ben · 🧲 Cat" for the scan. Lab managers go with the lab, or the scan on a
+// scan-only visit. Whoever does wanding/taping is only listed when they aren't already one of the scanners.
+function staffLine(appointment, part, doc) {
+  const names = (emails) => emails.filter(Boolean).map(nameFor).join(", ");
+  const items = [];
+  if (part === "lab") {
+    const lab = doc.lab || {};
+    if (lab.dryLab) items.push(`📝 ${nameFor(lab.dryLab)}`);
+    if (lab.mobilePhlebotomy || lab.phlebotomy) items.push(`🩸 ${lab.mobilePhlebotomy ? "Mobile Phleb" : nameFor(lab.phlebotomy)}`);
+    if (lab.wetLab) items.push(`🧪 ${nameFor(lab.wetLab)}`);
+  } else {
+    const scan = doc.scan || {};
+    if (scan.lead || scan.support) items.push(`🧠 ${names([scan.lead, scan.support])}`);
+    if (scan.wanding && scan.wanding !== scan.lead && scan.wanding !== scan.support) items.push(`🧲 ${nameFor(scan.wanding)}`);
+  }
+  if ((part === "lab" || !appointment.lab) && (doc.managers || []).length) items.push(`👩‍💻 ${names(doc.managers)}`);
+  return items.join(" · ");
+}
+
+// The staffing of a visit as lines, for the visit's own window.
+function staffedLines(appointment) {
+  const doc = staffingFor(appointment);
+  if (!doc) return [];
+  const lines = assignmentLines(appointment, doc, nameFor);
+  const all = [...lines.lab, ...lines.scan, ...lines.managers];
+  return all.length ? [el("h4", "", "Staffed"), ...all.map((line) => el("div", "staffed-line", line))] : [];
 }
 
 // --- The Staffing calendar ---
@@ -1193,7 +1222,8 @@ function daysPicker(selectedDays) {
   return { node, read: () => [...node.querySelectorAll("input:checked")].map((box) => box.value) };
 }
 
-function openEntryDialog(block, proposed) {
+// `iso` is the day it was opened from on the calendar, so a weekly entry can be removed for just that day.
+function openEntryDialog(block, proposed, iso = "") {
   const entry = availability.find((item) => item.id === block.id) || block;
   const kindLabel = entry.type === "class" ? "Class" : "Standing Conflict";
   if (!canEditEntriesOf(entry.ownerEmail)) {
@@ -1231,7 +1261,20 @@ function openEntryDialog(block, proposed) {
       return message;
     }),
     dialogButton("Remove", "secondary danger", async () => {
-      const message = await proposeChange({ deletes: [entry.id] }, `Remove "${describeEntry(entry)}"`);
+      // A weekly entry opened from a day on the calendar can be removed for just that day, or every week.
+      const which = iso ? await askChoice("Remove", `Remove ${entry.type === "class" ? "this class" : "this standing conflict"} just on ${formatIsoWithDay(iso)}, or every week?`, [
+        ["day", `Just ${formatIsoWithDay(iso)}`],
+        ["all", "Every week (the whole entry)"],
+      ]) : "all";
+      if (!which) {
+        const stop = new Error("Nothing was removed.");
+        stop.calledOff = true;
+        throw stop;
+      }
+      const message = which === "day"
+        ? await proposeChange({ updates: [{ id: entry.id, data: { ...withoutId(entry), skipDates: [...new Set([...(entry.skipDates || []), iso])].sort() } }] },
+          `Remove "${describeEntry(entry)}" on ${formatIso(iso)} only`)
+        : await proposeChange({ deletes: [entry.id] }, `Remove "${describeEntry(entry)}"`);
       await refresh();
       return message;
     }),
@@ -1672,6 +1715,31 @@ function askToProceed(title, text, yes) {
     back.addEventListener("click", () => finish(false));
     dialog.onclose = () => resolve(false);
     document.getElementById("email-dialog-actions").replaceChildren(go, back);
+    dialog.showModal();
+  });
+}
+
+// Asks which of a few choices to go with, as [value, button text] pairs. Resolves with the value, or null for none.
+function askChoice(title, text, choices) {
+  const dialog = document.getElementById("email-dialog");
+  document.getElementById("email-dialog-title").textContent = title;
+  document.getElementById("email-dialog-body").replaceChildren(el("p", "", text));
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      resolve(value);
+      dialog.close();
+    };
+    const buttons = choices.map(([value, label], index) => {
+      const button = el("button", index === 0 ? "primary" : "secondary", label);
+      button.type = "button";
+      button.addEventListener("click", () => finish(value));
+      return button;
+    });
+    const back = el("button", "secondary", "Go back");
+    back.type = "button";
+    back.addEventListener("click", () => finish(null));
+    dialog.onclose = () => resolve(null);
+    document.getElementById("email-dialog-actions").replaceChildren(...buttons, back);
     dialog.showModal();
   });
 }
@@ -2793,7 +2861,10 @@ function renderAppointmentsColumn(column, iso) {
       chips.append(el("span", `slot-chip ${doc ? "chip-staffed" : "chip-open"}`, doc ? "Staffed" : "Not staffed yet"));
     }
     if (chips.children.length) node.append(chips);
-    node.title = [heading.textContent, ...(short ? [time.textContent] : []), ...[...chips.children].map((chip) => chip.textContent)].join(" · ");
+    const doc = status === "confirmed" ? staffingFor(appointment) : null;
+    const team = doc ? staffLine(appointment, part, doc) : "";
+    if (team) node.append(el("div", "slot-staff", team));
+    node.title = [heading.textContent, ...(short ? [time.textContent] : []), ...[...chips.children].map((chip) => chip.textContent), ...(team ? [team] : [])].join(" · ");
     // Lab managers can drag any block to move it, or drag its top or bottom edge to change when it starts or ends.
     if (isReviewer()) {
       makeInteractive(node, {
@@ -3176,6 +3247,7 @@ function openMyBookingDialog(iso, appointment) {
   if (status === "booked" && appointment.requestedStart) body.push(el("p", "notice", `You asked to start at ${formatTime(appointment.requestedStart)}. A lab manager will approve or change it.`));
   body.push(...bookerNoteLine(appointment));
   for (const note of timeNotes(appointment)) body.push(el("p", "booking-unusual", note));
+  body.push(...staffedLines(appointment));
   const actions = [];
   if (status === "booked") actions.push(bookingEmailLink(iso, appointment));
   actions.push(confirmingButton("Cancel booking", "Click again to cancel the booking", "secondary danger", async () => {
@@ -3191,11 +3263,12 @@ function openVisitInfoDialog(iso, appointment) {
     ...visitHeading(iso, appointment),
     el("p", "", partsText(appointment)),
     ...timeNotes(appointment).map((note) => el("p", "booking-unusual", note)),
+    ...staffedLines(appointment),
   ], [closeButton()]);
 }
 
 // --- Booking ---
-// Bookers see visits and whether they're booked, never who is staffing them. Participant details never go
+// Bookers see visits, whether they're booked, and who's staffing them, like everyone. Participant details never go
 // through this site: bookers email them to reviewers from their own USC email instead.
 
 // Every booking from today on, as the visits they're on.
@@ -3894,7 +3967,8 @@ function updatesGroup(noticeId) {
 function describeEntry(block) {
   const dates = block.to ? `${formatIso(block.from)} – ${formatIso(block.to)}` : `from ${formatIso(block.from)}, no end date`;
   const label = block.type === "class" ? "Unavailable for class" : `Unavailable, standing conflict${block.note ? ` (${block.note})` : ""}`;
-  return `${label}: ${block.days.join(", ")}, ${formatTime(block.start)} – ${formatTime(block.end)}, ${dates}`;
+  const skipped = (block.skipDates || []).length ? `, except ${block.skipDates.map(formatIso).join(", ")}` : "";
+  return `${label}: ${block.days.join(", ")}, ${formatTime(block.start)} – ${formatTime(block.end)}, ${dates}${skipped}`;
 }
 
 function describeTimeOff(request) {
@@ -4928,7 +5002,8 @@ async function refresh() {
     Store.listChangeRequests(scope),
     // Everyone sees the Lab Calendar.
     Store.listAppointments(),
-    isReviewer() ? Store.listStaffing() : [],
+    // Everyone sees who's staffing each visit.
+    Store.listStaffing(),
     // Everyone can see who the reviewers are, so the site can say who's emailed about what they do.
     isReviewer() ? [] : Store.listReviewers(),
     Store.getProfile(me.email),
