@@ -1608,10 +1608,12 @@ function askEmails(title, groups) {
     go.type = "button";
     go.addEventListener("click", () => {
       const text = message.value.trim();
+      // Every email's choice is saved, even "everyone, no message", so it replaces any earlier choice for the same
+      // email that the script hasn't used yet (such as "Don't send" from a change that ended up emailing nobody).
       finish(shown.map((group) => {
         const skip = boxes.filter((item) => item.group === group && !item.box.checked).map((item) => item.person.email);
         return { kind: group.kind, ref: group.ref, skip, none: noneBox.checked || skip.length === group.recipients.length, message: text };
-      }).filter((choice) => choice.none || choice.skip.length || choice.message));
+      }));
     });
     const back = el("button", "secondary", "Go back");
     back.type = "button";
