@@ -520,6 +520,10 @@ function sendEmail({ to, subject, lines, footer = [] }) {
 // then shows in that account's Sent folder, and says in the log which way it went.
 function checkEmailSending() {
   const subject = "[TEST] Lab schedule: checking emails are kept in Sent";
+  // Asks for the Gmail sending permission if it hasn't been given yet, since Google doesn't always ask on its own.
+  if (typeof ScriptApp.requireScopes === "function") {
+    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, ["https://www.googleapis.com/auth/gmail.send"]);
+  }
   try {
     Gmail.Users.Messages.send({ raw: Utilities.base64EncodeWebSafe(mimeMessage(CONFIG.testEmailsTo, subject, "This is a test.", "<p>This is a test.</p>"), Utilities.Charset.UTF_8) }, "me");
     console.log(`Sent through Gmail to ${CONFIG.testEmailsTo}. It should be in Sent.`);
