@@ -38,6 +38,10 @@ const CONFIG = {
   labManagerEmail: "dbelkind@usc.edu",
   // Where scans are booked, linked from the 8:30 AM scan booking reminder.
   scanBookingUrl: "https://dni.usc.edu/dashboard.php",
+  // Gets a copy of each email the script sends to other people, with "[Sent copy]" at the start of its subject, since
+  // the script's own Sent folder is on the Google side of the account, which Outlook doesn't show. An Outlook rule can
+  // move these into a folder. Leave it "" for no copies.
+  sentCopiesTo: "dbelkind@usc.edu",
   // Where sendTestEmails sends its samples.
   testEmailsTo: "dbelkind@usc.edu",
   // The site's pings run at most this often, since anyone with the web app's link could call it.
@@ -311,11 +315,27 @@ function syncAppointments(site, today) {
 // lab managers see on the site when the 10-minute checks have stopped.
 const HEALTH_LATE_MINUTES = 60;
 
+// Google's passing hiccups ("a server error occurred", rate limits, timeouts), which usually clear up within seconds.
+const PASSING_ERROR = /server error|try again|service unavailable|backend error|internal error|timed? ?out|rate limit|too many/i;
+
+// Steps that send email aren't tried again, since one that failed partway could otherwise email someone twice; the
+// next run picks up where it left off.
+const SENDS_EMAIL = ["Request emails", "Cancellation emails", "Staff emails", "Re-sent staff emails", "Booking form",
+  "Scan booking reminder", "Unbooked visits", "Birthdays and graduations", "Class and finals reminders", "USC calendar reminder"];
+
 function runSteps(name, steps) {
   const errors = [];
   for (const [label, step] of steps) {
     try {
-      step();
+      try {
+        step();
+      } catch (error) {
+        // One retry after a short wait for a passing Google error, before it counts as a failure.
+        if (!PASSING_ERROR.test(error.message) || SENDS_EMAIL.includes(label)) throw error;
+        console.log(`${label}: ${error.message} Trying again in 10 seconds.`);
+        Utilities.sleep(10000);
+        step();
+      }
     } catch (error) {
       console.error(`${label} failed: ${error.message}`);
       errors.push(`${label}: ${error.message}`);
@@ -502,10 +522,19 @@ function emailHtml(subject, lines, footer) {
 }
 
 // Every email goes through here, so they all look the same and all say how to report one sent by mistake.
-// Sent through Gmail itself, so each email is kept in your Sent folder like one you wrote, rather than turning up in
-// your inbox. Its permission only lets the script send email, not read any. If Gmail can't be reached, it falls back
-// to Apps Script's own mail service.
+// Sent through Gmail itself, so a copy doesn't turn up in your own inbox. Its permission only lets the script send
+// email, not read any. If Gmail can't be reached, it falls back to Apps Script's own mail service. An email that
+// doesn't already go to CONFIG.sentCopiesTo also sends it a "[Sent copy]".
 function sendEmail({ to, subject, lines, footer = [] }) {
+  sendOne({ to, subject, lines, footer });
+  const copyTo = CONFIG.sentCopiesTo;
+  const recipients = to.split(",").map((address) => address.trim().toLowerCase());
+  if (copyTo && !recipients.includes(copyTo.toLowerCase())) {
+    sendOne({ to: copyTo, subject: `[Sent copy] ${subject}`, lines: [`Copy of the email sent to ${recipients.join(", ")}.`, "", ...lines], footer });
+  }
+}
+
+function sendOne({ to, subject, lines, footer = [] }) {
   const body = [...lines.map(plainText), "", ...footer.map(plainText), `Received this email by mistake? Let the lab manager know: ${CONFIG.labManagerEmail}`].join("\n");
   const htmlBody = emailHtml(subject, lines, footer);
   try {
@@ -513,22 +542,6 @@ function sendEmail({ to, subject, lines, footer = [] }) {
   } catch (error) {
     console.log(`Gmail couldn't send "${subject}" (${error.message}), so it went through Apps Script's mail service instead.`);
     MailApp.sendEmail({ to, subject, body, htmlBody });
-  }
-}
-
-// Run this from the editor to check emails go through Gmail: it sends one short email to CONFIG.testEmailsTo, which
-// then shows in that account's Sent folder, and says in the log which way it went.
-function checkEmailSending() {
-  const subject = "[TEST] Lab schedule: checking emails are kept in Sent";
-  // Asks for the Gmail sending permission if it hasn't been given yet, since Google doesn't always ask on its own.
-  if (typeof ScriptApp.requireScopes === "function") {
-    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, ["https://www.googleapis.com/auth/gmail.send"]);
-  }
-  try {
-    Gmail.Users.Messages.send({ raw: Utilities.base64EncodeWebSafe(mimeMessage(CONFIG.testEmailsTo, subject, "This is a test.", "<p>This is a test.</p>"), Utilities.Charset.UTF_8) }, "me");
-    console.log(`Sent through Gmail to ${CONFIG.testEmailsTo}. It should be in Sent.`);
-  } catch (error) {
-    console.log(`Gmail couldn't send it: ${error.message}`);
   }
 }
 
