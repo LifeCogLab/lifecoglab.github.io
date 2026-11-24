@@ -19,6 +19,9 @@ const CONFIG = {
   visitsCalendarName: "LCL Avail Visits",
   confirmedCalendarName: "LCL Confirmed Visits",
   celebrationsCalendarName: "LCL Birthdays & Graduations",
+  // Booked visits with their Screener IDs, from the booking form. Private to the script's owner; share it with the other
+  // lab managers by hand. Nothing in it is ever saved to the site or its database.
+  appointmentsCalendarName: "LCL Participant Appointments",
   daysAhead: 60,
   timeZone: "America/Los_Angeles",
   // Adds assigned staff as guests on their Confirmed Visits events and emails them about their visits. Set it to false
@@ -64,7 +67,7 @@ const RULE_NAMES = [
   "appointmentsOn", "evaluateVisitSlot", "evaluateManagers", "managerCandidates", "normalizeSkills", "isOffHours",
   "SLOT_TITLES", "staffingState", "personLabel", "visitKey", "visitWindow", "unusualTimes", "visitPartsLabel",
   "defaultVisitsThrough", "assignmentLines", "checkAssignment", "BOOKING_STARTS", "clockTime", "wantsEmail", "SEE_TIME",
-  "staffRoles", "bookingEmail", "birthdayMonthDay", "visitStatus", "shortenedScan", "SHORTENED_SCAN", "actsAsLabManager", "labNeeds", "SEE_NOTE",
+  "staffRoles", "visitStaffEntry", "staffChanges", "staffEmailContent", "bookingEmail", "birthdayMonthDay", "visitStatus", "shortenedScan", "SHORTENED_SCAN", "actsAsLabManager", "labNeeds", "SEE_NOTE",
 ];
 // Older trigger names are listed too, so running setUp again clears them away.
 const TRIGGERS = ["syncStaffing", "hourlySync", "checkRequests", "frequentChecks", "dailyVisits"];
@@ -77,6 +80,7 @@ function setUp() {
   ScriptApp.newTrigger("frequentChecks").timeBased().everyMinutes(10).create();
   // Google runs daily triggers within about 15 minutes of the time asked for.
   ScriptApp.newTrigger("dailyVisits").timeBased().everyDays(1).atHour(8).nearMinute(30).inTimezone(CONFIG.timeZone).create();
+  bookingForm();
   hourlySync();
   frequentChecks();
 }
@@ -122,7 +126,235 @@ function withLock(work) {
 
 // Every hour: LCL Birthdays & Graduations.
 function hourlySync() {
-  withLock(() => syncCelebrations(loadSite(), listCollection("profiles"), new Date()));
+  runSteps("hourlySync", [["LCL Birthdays & Graduations", () => withLock(() => syncCelebrations(loadSite(), listCollection("profiles"), new Date()))]]);
+  checkHealth(new Date());
+}
+
+// --- The booking form ---
+// After booking a visit on the site, the booker is sent to this Google Form, with the visit filled in, to give its
+// Screener ID and any note for the lab managers. The form needs a USC sign-in, and nobody but its owner sees the
+// answers. Every 10 minutes the script puts each answer on LCL Participant Appointments (a calendar only the lab
+// managers have), emails it to the lab managers, and deletes it from the form. So the Screener ID is only ever kept
+// on that calendar and in those emails: never on the site or in its database. The note, which mustn't identify the
+// participant, is also saved on the visit, as a note typed on the site used to be, so lab managers see it there.
+// The site gets the form's link (with the visit field left as VISIT_PLACEHOLDER) from settings/bookingForm.
+const VISIT_PLACEHOLDER = "VISIT_PLACEHOLDER";
+
+function bookingForm() {
+  const properties = PropertiesService.getScriptProperties();
+  const savedId = properties.getProperty("bookingFormId");
+  if (savedId) {
+    let form = null;
+    try {
+      form = FormApp.openById(savedId);
+    } catch (error) {
+      // It was deleted, so make a new one below.
+    }
+    if (form) {
+      addFormNoteItems(form);
+      return form;
+    }
+  }
+  const form = FormApp.create("Lifespan Cognition Lab: Screener ID for a Booking");
+  form.setDescription("Only the lab managers see this. Check the visit below is the one you booked, add the participant's Screener ID, and submit. Don't add anything else about the participant.")
+    .setCollectEmail(true)
+    .setPublishingSummary(false)
+    .setAllowResponseEdits(false)
+    .setShowLinkToRespondAgain(false)
+    .setConfirmationMessage("Thanks! The lab managers have the Screener ID. You can close this tab.");
+  try {
+    form.setRequireLogin(true);
+  } catch (error) {
+    console.log(`Couldn't require a USC sign-in for the booking form (${error.message}).`);
+  }
+  const visit = form.addTextItem().setTitle("Visit").setHelpText("Filled in for you. Please don't change it.").setRequired(true);
+  form.addTextItem().setTitle("Screener ID").setRequired(true);
+  addFormNoteItems(form);
+  properties.setProperty("bookingFormId", form.getId());
+  const url = form.createResponse().withItemResponse(visit.createResponse(VISIT_PLACEHOLDER)).toPrefilledUrl();
+  writeDocument("settings/bookingForm", { url, placeholder: VISIT_PLACEHOLDER });
+  console.log(`Booking form ready: ${form.getEditUrl()}`);
+  return form;
+}
+
+const FORM_NOTE = "Note for the lab managers (optional)";
+const FORM_CHECK = "No identifiers";
+
+// The note and the check that it doesn't identify anyone, added to a form made before they existed.
+function addFormNoteItems(form) {
+  const titles = form.getItems().map((item) => item.getTitle());
+  if (!titles.includes(FORM_NOTE)) {
+    form.addParagraphTextItem().setTitle(FORM_NOTE)
+      .setHelpText('Anything the lab managers should know for this visit, such as "Participant mentioned they have thin veins" or "Participant wears soft contacts". DO NOT INCLUDE ANY IDENTIFIERS (name, address, email, phone number, date of birth, etc.) OR STUDY IDs.');
+  }
+  if (!titles.includes(FORM_CHECK)) {
+    const check = form.addCheckboxItem().setTitle(FORM_CHECK).setRequired(true);
+    check.setChoices([check.createChoice("I confirm that nothing I entered identifies the participant, beyond the Screener ID.")]);
+  }
+}
+
+// The form's Visit field, as the site fills it in: "Tue, Dec 1, 2026, 9:00 AM – 1:00 PM · 2026-12-01 · <visit key>".
+function parseVisitField(text) {
+  const match = /(\d{4}-\d{2}-\d{2}) · (\S+)\s*$/.exec(text || "");
+  return match ? { date: match[1], key: match[2] } : null;
+}
+
+function checkBookingForm(site, today) {
+  const properties = PropertiesService.getScriptProperties();
+  if (!properties.getProperty("bookingFormId")) return;
+  const form = bookingForm();
+  const responses = form.getResponses();
+  if (!responses.length) return;
+  const calendarId = calendarIdFor("appointmentsCalendarId", CONFIG.appointmentsCalendarName,
+    "Booked participant visits with their Screener IDs, from the Researcher Portal's booking form. Only for lab managers.");
+  const { rules } = site;
+  const nameOf = (email) => (site.members.find((member) => member.id === email) || {}).name || email;
+  const booked = [];
+  for (const response of responses) {
+    const answers = Object.fromEntries(response.getItemResponses().map((item) => [item.getItem().getTitle(), String(item.getResponse() || "").trim()]));
+    const visit = parseVisitField(answers.Visit);
+    const appointment = visit && visitsOn(rules, visit.date, site.appointments, site.holidays).find((item) => rules.visitKey(item) === visit.key);
+    const by = response.getRespondentEmail();
+    const screener = answers["Screener ID"];
+    // The site only allows 500 characters for a note, so a longer one is cut short on the visit (it's in full here).
+    const note = answers[FORM_NOTE] || "";
+    if (appointment && note) writeDocument(`appointments/${visit.key}`, { bookerNote: note.slice(0, 500) });
+    if (appointment) {
+      const window = rules.visitWindow(appointment);
+      Calendar.Events.insert({
+        summary: `Participant Visit · Screener ID: ${screener}`,
+        description: [...(note ? [`*NOTE (from the booker): ${note}`, ""] : []), `Booked by ${nameOf(by)} (${by}) on the Researcher Portal.`, `Confirm and staff it: ${CONFIG.siteUrl}#visit=${visit.key}`].join("\n"),
+        start: { dateTime: dateAtMinutes(visit.date, window.start).toISOString(), timeZone: CONFIG.timeZone },
+        end: { dateTime: dateAtMinutes(visit.date, window.end).toISOString(), timeZone: CONFIG.timeZone },
+        extendedProperties: { private: { labKey: visit.key } },
+      }, calendarId, { sendUpdates: "none" });
+      booked.push({ id: `${visit.key}:booked`, owner: null, date: visit.date, appointment, by: nameOf(by), screener, note });
+    } else {
+      // A visit that's since been cancelled or moved: the lab managers are told, with the answer as it was.
+      Calendar.Events.insert({
+        summary: `Check this booking · Screener ID: ${screener}`,
+        description: `From ${nameOf(by)} (${by}) for "${answers.Visit}", which isn't on the Lab Calendar any more.${note ? `\nNote: ${note}` : ""}`,
+        start: { date: isoOf(today) },
+        end: { date: isoOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)) },
+      }, calendarId, { sendUpdates: "none" });
+      booked.push({ id: `${response.getId()}:unmatched`, owner: null, date: isoOf(today), appointment: null, by: nameOf(by), visit: answers.Visit, screener, note });
+    }
+    form.deleteResponse(response.getId());
+  }
+  emailReviewers(rules, site.members, "bookings", booked, (items) => bookingsEmail(rules, items));
+  console.log(`${responses.length} booking form answer(s) added to ${CONFIG.appointmentsCalendarName}.`);
+}
+
+function bookingsEmail(rules, items) {
+  const lines = [];
+  for (const item of items) {
+    if (!item.appointment) {
+      lines.push(`• ${bold(item.by)} sent Screener ID ${highlight(bold(item.screener))} for ${item.visit}, which ${bold("isn't on the Lab Calendar any more")}. It's on ${CONFIG.appointmentsCalendarName} today, to sort out.`,
+        ...(item.note ? [`  Note: ${item.note}`] : []));
+      continue;
+    }
+    const { appointment } = item;
+    lines.push(`• ${dateMark(`${emailDateWithDay(item.date)}, ${visitTimesForEmail(rules, appointment)}`)}, booked by ${bold(item.by)}`,
+      `  ${highlight(bold("Screener ID:"))} ${bold(item.screener)}`,
+      ...(appointment.requestedStart ? [`  Asked to start at ${bold(emailTime(appointment.requestedStart))} (needs your approval)`] : []),
+      ...(item.note ? [`  Note: ${item.note}`] : []),
+      `  Confirm and staff it: ${CONFIG.siteUrl}#visit=${rules.visitKey(appointment)}`);
+  }
+  return {
+    subject: items.length === 1 && items[0].appointment ? `Lab schedule: booked for ${emailDateWithDay(items[0].date)}` : `Lab schedule: ${items.length} new booking(s)`,
+    lines: [...lines, "", `It's also on ${bold(CONFIG.appointmentsCalendarName)} in Google Calendar. Please don't forward this email.`],
+  };
+}
+
+// Keeps LCL Participant Appointments in step with the site: a visit whose times change is moved, and one that's no
+// longer booked (cancelled, or open to rebook) is taken off. Events only ever come from the booking form, since the
+// Screener ID is nowhere else.
+function syncAppointments(site, today) {
+  if (!PropertiesService.getScriptProperties().getProperty("appointmentsCalendarId")) return;
+  const calendarId = calendarIdFor("appointmentsCalendarId", CONFIG.appointmentsCalendarName, "");
+  const { rules } = site;
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + CONFIG.daysAhead + 7);
+  for (const event of listEvents(calendarId, new Date(today.getFullYear(), today.getMonth(), today.getDate()), end)) {
+    const key = ((event.extendedProperties || {}).private || {}).labKey;
+    if (!key || !event.start.dateTime) continue;
+    const date = isoOf(new Date(event.start.dateTime));
+    const appointment = visitsOn(rules, date, site.appointments, site.holidays).find((item) => rules.visitKey(item) === key);
+    if (!appointment || rules.visitStatus(appointment) === "open") {
+      Calendar.Events.remove(calendarId, event.id, { sendUpdates: "none" });
+      continue;
+    }
+    const window = rules.visitWindow(appointment);
+    const start = dateAtMinutes(date, window.start).toISOString();
+    const finish = dateAtMinutes(date, window.end).toISOString();
+    if (new Date(event.start.dateTime).toISOString() !== start || new Date(event.end.dateTime).toISOString() !== finish) {
+      Calendar.Events.patch({ start: { dateTime: start, timeZone: CONFIG.timeZone }, end: { dateTime: finish, timeZone: CONFIG.timeZone } }, calendarId, event.id, { sendUpdates: "none" });
+    }
+  }
+}
+
+// --- Keeping an eye on the script ---
+// Each scheduled run does its steps one at a time, so one that fails (say, Google Calendar being down) doesn't stop the
+// rest. Any failures are thrown together at the end, so the run still shows as Failed under Executions and Google's
+// failure emails still come. Each run's time and errors are saved to the site's database (settings/scriptHealth), so
+// lab managers see on the site when the 10-minute checks have stopped.
+const HEALTH_LATE_MINUTES = 60;
+
+function runSteps(name, steps) {
+  const errors = [];
+  for (const [label, step] of steps) {
+    try {
+      step();
+    } catch (error) {
+      console.error(`${label} failed: ${error.message}`);
+      errors.push(`${label}: ${error.message}`);
+    }
+  }
+  try {
+    writeDocument("settings/scriptHealth", { [name]: new Date().toISOString(), [`${name}Errors`]: errors.join("\n").slice(0, 1500) });
+  } catch (error) {
+    console.error(`Couldn't save the script's health: ${error.message}`);
+  }
+  PropertiesService.getScriptProperties().setProperty(`health:${name}`, JSON.stringify({ at: new Date().toISOString(), errors }));
+  if (errors.length) throw new Error(`${errors.length} step(s) failed:\n${errors.join("\n")}`);
+}
+
+// From the hourly and 8:30 AM runs: emails the lab manager once if the 10-minute checks haven't finished in an hour.
+function checkHealth(now) {
+  const properties = PropertiesService.getScriptProperties();
+  const last = JSON.parse(properties.getProperty("health:frequentChecks") || "null");
+  // Nothing to compare against until the first 10-minute check after this was added.
+  if (!last) return;
+  const late = now - Date.parse(last.at) > HEALTH_LATE_MINUTES * 60 * 1000;
+  if (!late) {
+    properties.deleteProperty("healthAlerted");
+    return;
+  }
+  if (properties.getProperty("healthAlerted")) return;
+  properties.setProperty("healthAlerted", now.toISOString());
+  sendEmail({
+    to: CONFIG.labManagerEmail,
+    subject: "Lab schedule: the 10-minute checks have stopped",
+    lines: [
+      `The script's 10-minute checks last ran ${bold(emailDateWithDay(isoOf(new Date(last.at))))} at ${bold(emailTime(Utilities.formatDate(new Date(last.at), CONFIG.timeZone, "HH:mm")))}, so staff emails, request emails and calendar updates are waiting.`,
+      "",
+      `Open the Apps Script, check ${bold("Executions")} for errors and ${bold("Triggers")} for a frequentChecks trigger every 10 minutes. Running ${bold("setUp")} once puts the triggers back.`,
+    ],
+  });
+}
+
+// Saves fields onto a document, leaving its other fields alone. Values are strings.
+function writeDocument(path, fields) {
+  const mask = Object.keys(fields).map((key) => `updateMask.fieldPaths=${encodeURIComponent(key)}`).join("&");
+  const response = UrlFetchApp.fetch(`https://firestore.googleapis.com/v1/projects/${CONFIG.projectId}/databases/(default)/documents/${path}?${mask}`, {
+    method: "patch",
+    contentType: "application/json",
+    muteHttpExceptions: true,
+    headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}`, "X-Goog-User-Project": CONFIG.projectId },
+    payload: JSON.stringify({ fields: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, { stringValue: String(value) }])) }),
+  });
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`Couldn't save ${path} to Firebase (HTTP ${response.getResponseCode()}): ${response.getContentText().slice(0, 300)}`);
+  }
 }
 
 function syncVisits(site, staffing, today) {
@@ -151,14 +383,22 @@ function syncCalendarsNow() {
 // Staff invites and emails wait for this run, so a mistake fixed within a few minutes never reaches anyone.
 function frequentChecks() {
   withLock(() => {
-    checkRequests();
-    const site = loadSite();
-    const staffing = listCollection("staffing");
     const today = new Date();
-    checkCancellations(site, staffing, today);
-    syncVisits(site, staffing, today);
-    syncConfirmed(site, staffing, today);
-    notifyStaff(site, staffing, today);
+    let site;
+    let staffing;
+    runSteps("frequentChecks", [
+      ["Request emails", () => checkRequests()],
+      ["Loading the site", () => {
+        site = loadSite();
+        staffing = listCollection("staffing");
+      }],
+      ["Cancellation emails", () => site && checkCancellations(site, staffing, today)],
+      [CONFIG.visitsCalendarName, () => site && syncVisits(site, staffing, today)],
+      [CONFIG.confirmedCalendarName, () => site && syncConfirmed(site, staffing, today)],
+      ["Staff emails", () => site && notifyStaff(site, staffing, today)],
+      ["Booking form", () => site && checkBookingForm(site, today)],
+      [CONFIG.appointmentsCalendarName, () => site && syncAppointments(site, today)],
+    ]);
   });
 }
 
@@ -556,14 +796,14 @@ function cancellationsEmail(rules, items) {
   if (bookings.length) {
     lines.push(bookings.length === 1 ? `A booking was ${cancelled}:` : `Bookings were ${cancelled}:`, "");
     for (const item of bookings) lines.push(`• ${describe(item)}${item.visit.by ? `, cancelled by ${bold(item.visit.by)}` : ""}`, `  Cancel the visit if it won't be rebooked: ${CONFIG.siteUrl}#visit=${item.key}`);
-    lines.push("", `The visit ${bold("stays open")} so it can be rebooked, and its staff ${bold("haven't been told")}. Update the lab's appointment calendar in Google Calendar.`);
+    lines.push("", `The visit ${bold("stays open")} so it can be rebooked, and its staff ${bold("haven't been told")}. It's taken off ${CONFIG.appointmentsCalendarName} automatically.`);
   }
   if (visits.length) {
     if (lines.length) lines.push("");
     lines.push(visits.length === 1 ? `A visit was ${cancelled}:` : `Visits were ${cancelled}:`, "", ...visits.map((item) => `• ${describe(item)}`), "",
       CONFIG.inviteStaff
-        ? "Its staff are emailed automatically within 10 minutes. Update the lab's appointment calendar in Google Calendar."
-        : `Staff emails are switched off for now, so its staff ${bold("haven't been emailed")}. Update the lab's appointment calendar in Google Calendar.`);
+        ? `Its staff are emailed automatically within 10 minutes. It's taken off ${CONFIG.appointmentsCalendarName} automatically.`
+        : `Staff emails are switched off for now, so its staff ${bold("haven't been emailed")}. It's taken off ${CONFIG.appointmentsCalendarName} automatically.`);
   }
   return { subject, lines };
 }
@@ -573,12 +813,15 @@ function cancellationsEmail(rules, items) {
 function dailyVisits() {
   const site = loadSite();
   const profiles = listCollection("profiles");
-  remindScanBooking(site);
-  remindUnbooked(site, new Date());
-  remindCelebrations(site, profiles, new Date());
-  remindLabMembers(site, profiles, listCollection("changeRequests"), new Date());
-  remindCalendarData(site, new Date());
-  withLock(() => syncVisits(site, listCollection("staffing"), new Date()));
+  runSteps("dailyVisits", [
+    ["Scan booking reminder", () => remindScanBooking(site)],
+    ["Unbooked visits", () => remindUnbooked(site, new Date())],
+    ["Birthdays and graduations", () => remindCelebrations(site, profiles, new Date())],
+    ["Class and finals reminders", () => remindLabMembers(site, profiles, listCollection("changeRequests"), new Date())],
+    ["USC calendar reminder", () => remindCalendarData(site, new Date())],
+    [CONFIG.visitsCalendarName, () => withLock(() => syncVisits(site, listCollection("staffing"), new Date()))],
+  ]);
+  checkHealth(new Date());
 }
 
 function scanReminderEmail(rules, iso, visit) {
@@ -991,11 +1234,13 @@ function fetchJson(path) {
   return JSON.parse(fetchText(path));
 }
 
+// deploy.sh bundles scheduling.js into the script as RULES_SOURCE, so the script always runs the same rules as the site
+// it was deployed with. A Code.gs pasted in by hand has no bundle, so it reads them from the live site instead.
 function loadRules() {
-  const code = fetchText("scheduling.js");
+  const code = typeof RULES_SOURCE === "string" ? RULES_SOURCE : fetchText("scheduling.js");
   const rules = new Function(`${code}\nreturn { ${RULE_NAMES.map((name) => `${name}: typeof ${name} === "undefined" ? undefined : ${name}`).join(", ")} };`)();
   const missing = RULE_NAMES.filter((name) => rules[name] === undefined);
-  if (missing.length) throw new Error(`The published scheduling.js is out of date (missing ${missing.join(", ")}). Push the latest site to GitHub.`);
+  if (missing.length) throw new Error(`scheduling.js is out of date (missing ${missing.join(", ")}). Run deploy.sh, or push the latest site to GitHub.`);
   return rules;
 }
 
@@ -1313,108 +1558,25 @@ function calendarViewers(calendarId) {
 // cancelled. A cancelled booking waiting to be rebooked changes nothing, so it sends nothing. What each person was last
 // told is kept in script properties, one per visit, so a fix made before the next run never reaches anyone.
 
-// What each person is doing on each upcoming staffed visit. Kept free of Google services so it can be tested.
+// What each person is doing on each upcoming staffed visit (see visitStaffEntry in scheduling.js). Kept free of Google
+// services so it can be tested.
 function staffSnapshot(rules, appointments, holidays, staffing, today) {
   const todayIso = isoOf(today);
   const snapshot = {};
   for (const doc of staffing) {
     if (doc.date < todayIso) continue;
-    const appointment = visitsOn(rules, doc.date, appointments, holidays).find((visit) => rules.visitKey(visit) === doc.visitKey);
+    const visits = visitsOn(rules, doc.date, appointments, holidays);
+    const appointment = visits.find((visit) => rules.visitKey(visit) === doc.visitKey);
     if (!appointment) continue;
-    const window = rules.visitWindow(appointment);
-    const people = {};
-    const parts = {};
-    for (const role of rules.staffRoles(appointment, doc)) {
-      (people[role.email] = people[role.email] || []).push(`${role.role}, ${rules.clockTime(role.from)}–${rules.clockTime(role.to)}`);
-      (parts[role.email] = parts[role.email] || new Set()).add(role.part);
-    }
-    // Each person is only pointed to unusual times in the portion they work; lab managers see both.
-    // A shortened scan is pointed out to whoever's on the scan, and to lab managers.
-    const seeTime = {};
-    const shortened = {};
-    for (const [email, theirs] of Object.entries(parts)) {
-      seeTime[email] = theirs.has("visit") ? rules.unusualTimes(appointment, undefined, true)
-        : [...new Set(["lab", "scan"].filter((part) => theirs.has(part)).flatMap((part) => rules.unusualTimes(appointment, part, true)))];
-      if (theirs.has("visit") || theirs.has("scan")) shortened[email] = rules.shortenedScan(appointment);
-    }
-    snapshot[doc.visitKey] = {
-      date: doc.date,
-      visit: `${rules.clockTime(window.start)} – ${rules.clockTime(window.end)}`,
-      participants: visitsOn(rules, doc.date, appointments, holidays).length,
-      seeTime,
-      shortened,
-      people,
-    };
+    snapshot[doc.visitKey] = rules.visitStaffEntry({ ...appointment, date: doc.date }, doc, visits.length);
   }
   return snapshot;
 }
 
-// The changes for each person between what they were last told and now. `stillScheduled(key, date)` tells a
-// visit that's been unstaffed from one that's been cancelled.
-function staffChanges(before, after, todayIso, stillScheduled) {
-  const changes = {};
-  const add = (email, change) => (changes[email] = changes[email] || []).push(change);
-  for (const [key, visit] of Object.entries(after)) {
-    const old = before[key];
-    for (const [email, roles] of Object.entries(visit.people)) {
-      const was = old && old.people[email];
-      const seeTime = (visit.seeTime && visit.seeTime[email]) || [];
-      const shortened = (visit.shortened && visit.shortened[email]) || "";
-      // Only someone's own roles and times count: a moved scan doesn't email the lab staff.
-      if (!was) add(email, { type: "assigned", key, visit, roles, seeTime, shortened });
-      else if (was.join("|") !== roles.join("|") || old.date !== visit.date) add(email, { type: "changed", key, visit, roles, was, oldVisit: old, seeTime, shortened });
-    }
-    for (const [email, roles] of Object.entries((old && old.people) || {})) {
-      if (!visit.people[email]) add(email, { type: "removed", key, visit: old, roles });
-    }
-  }
-  for (const [key, old] of Object.entries(before)) {
-    // Visits that have happened are simply forgotten.
-    if (after[key] || old.date < todayIso) continue;
-    const type = stillScheduled(key, old.date) ? "removed" : "cancelled";
-    for (const [email, roles] of Object.entries(old.people)) add(email, { type, key, visit: old, roles });
-  }
-  return changes;
-}
-
-const STAFF_SUBJECTS = {
-  assigned: (date) => `Lab visit: you're staffing ${date}`,
-  changed: (date) => `Lab visit: your times changed for ${date}`,
-  removed: (date) => `Lab visit: you're no longer staffing ${date}`,
-  cancelled: (date) => `Lab visit cancelled: ${date}`,
-};
-
+// The email for one person, worded by staffEmailContent in scheduling.js, so the site can show lab managers the same
+// email before it goes out.
 function staffEmail(rules, name, changes) {
-  const lines = [`Hi ${name},`, ""];
-  const roles = (list) => list.map((role) => bold(highlight(role))).join("; ");
-  for (const change of changes) {
-    const date = dateMark(emailDateWithDay(change.visit.date));
-    if (change.type === "assigned") {
-      lines.push(`You're staffing a participant visit on ${date} (whole visit ${change.visit.visit}).`, `${bold("Your role:")} ${roles(change.roles)}`);
-    } else if (change.type === "changed") {
-      lines.push(`Your times ${bold(underline("changed"))} for the participant visit on ${date} (whole visit ${change.visit.visit}).`,
-        `${bold(underline("Before:"))} ${change.was.join("; ")}${change.oldVisit.date !== change.visit.date ? ` on ${emailDateWithDay(change.oldVisit.date)}` : ""}`,
-        `${bold(underline("Now:"))} ${roles(change.roles)}`);
-    } else if (change.type === "removed") {
-      lines.push(`You're ${bold(underline("no longer"))} staffing the participant visit on ${date}. You were down for: ${change.roles.join("; ")}.`);
-    } else {
-      lines.push(`The participant visit on ${date} (${change.visit.visit}) has been ${bold(underline("cancelled"))}. You were down for: ${change.roles.join("; ")}.`);
-    }
-    if (change.message) lines.push(`${bold(`Message from ${change.messageBy}:`)} ${change.message}`);
-    const current = change.type === "assigned" || change.type === "changed";
-    if (current && change.visit.participants > 1) lines.push(`👥 ${bold(`${change.visit.participants} participants`)} are scheduled that day, so check which visit is yours.`);
-    if (current && (change.seeTime || []).length) {
-      lines.push(`${highlight(bold(rules.SEE_TIME))} These ${bold("aren't the usual times")}, so please check yours:`, ...change.seeTime.map((note) => `• ${bold(note)}`));
-    }
-    if (current && change.shortened) lines.push(`${highlight(bold(rules.SHORTENED_SCAN))} ${change.shortened}.`);
-    lines.push("");
-  }
-  lines.push("Your Google Calendar has been updated to match. Questions? Ask the lab manager.");
-  const first = changes[0];
-  const seeTime = changes.some((change) => (change.type === "assigned" || change.type === "changed") && (change.seeTime || []).length);
-  const shortened = changes.some((change) => (change.type === "assigned" || change.type === "changed") && change.shortened);
-  const subject = changes.length === 1 ? STAFF_SUBJECTS[first.type](emailDateWithDay(first.visit.date)) : `Lab visits: ${changes.length} updates for you`;
-  return { subject: `${subject}${seeTime ? ` ${rules.SEE_TIME}` : ""}${shortened ? ` ${rules.SHORTENED_SCAN}` : ""}`, lines };
+  return rules.staffEmailContent(name, changes, emailDateWithDay);
 }
 
 // Staff can't turn these off: they carry the times people need. Nothing is sent, or remembered, until
@@ -1437,7 +1599,7 @@ function notifyStaff(site = loadSite(), staffing = listCollection("staffing"), t
     return { emailed: 0 };
   }
   const stillScheduled = (key, date) => visitsOn(rules, date, site.appointments, site.holidays).some((visit) => rules.visitKey(visit) === key);
-  const changes = staffChanges(before, after, isoOf(today), stillScheduled);
+  const changes = rules.staffChanges(before, after, isoOf(today), stillScheduled);
   const nameOf = (email) => (site.members.find((member) => member.id === email) || {}).name || email;
   // Whoever made a change could leave people off its email, or add a message (see Email choices).
   const keys = [...new Set(Object.values(changes).flat().map((change) => change.key))];
@@ -1445,9 +1607,12 @@ function notifyStaff(site = loadSite(), staffing = listCollection("staffing"), t
   const choiceFor = new Map(keys.map((key) => [key, takeChoice(choices, "staff", key)]));
   let emailed = 0;
   for (const [email, all] of Object.entries(changes)) {
+    // A lab manager may have added a message, or rewritten this person's email for the visit, in the site's pop-up.
     const theirs = all.filter((change) => !leftOut(choiceFor.get(change.key), email)).map((change) => {
       const choice = choiceFor.get(change.key);
-      return choice && choice.message ? { ...change, message: choice.message, messageBy: choice.byName || choice.by } : change;
+      if (!choice) return change;
+      const custom = ((choice.bodies || []).find((body) => body.email === email) || {}).text;
+      return { ...change, ...(choice.message ? { message: choice.message, messageBy: choice.byName || choice.by } : {}), ...(custom ? { custom } : {}) };
     });
     if (!theirs.length) continue;
     sendEmail({ to: email, ...staffEmail(rules, nameOf(email), theirs) });
@@ -1510,18 +1675,15 @@ function sendTestEmails() {
   });
   send("reviewers from a booker (the site drafts it in the booker's own email, as plain text; they fill in the Screener ID)", { subject: booker.subject, lines: booker.body.split("\n") });
 
-  const visit = { date: "2027-01-12", visit: "9:30 AM – 1:30 PM", participants: 2, people: {} };
-  const roles = ["Phlebotomy, 9:30 AM–10:00 AM", "Wet Lab, 10:00 AM–12:00 PM"];
-  // Lab staff hear about the start time, but not the shorter scan.
-  const seeTime = rules.unusualTimes(late, "lab", true);
-  const staffSample = (changes) => send("staff (once staff emails are switched on)", staffEmail(rules, "Jordan", changes));
-  staffSample([{ type: "assigned", visit, roles, seeTime }]);
-  staffSample([{ type: "changed", visit, roles: ["Phlebotomy, 9:30 AM–10:00 AM", "Wet Lab, 10:15 AM–12:15 PM"], was: roles, oldVisit: visit, seeTime }]);
-  staffSample([{ type: "removed", visit, roles }]);
-  staffSample([{ type: "cancelled", visit, roles }]);
-  // A scanner on a scan that starts late and is shortened.
-  staffSample([{ type: "assigned", visit, roles: ["Lead scanner, 11:30 AM–1:00 PM"], seeTime: rules.unusualTimes(late, "scan", true), shortened: rules.shortenedScan(late) }]);
-  staffSample([{ type: "assigned", visit, roles, seeTime }, { type: "cancelled", visit: { ...visit, date: "2027-01-14" }, roles: ["Lead scanner, 11:00 AM–1:00 PM"] }]);
+  const staffed = { lead: "dan@usc.edu", support: "jordan@usc.edu" };
+  const usualEntry = rules.visitStaffEntry({ ...usual, date: "2027-01-12" }, { scan: staffed }, 1);
+  const lateEntry = rules.visitStaffEntry({ ...late, date: "2027-01-12" }, { scan: staffed }, 2);
+  const staffSample = (changes) => send("staff", staffEmail(rules, "Dan", changes));
+  staffSample([{ type: "assigned", visit: lateEntry, roles: ["Dry Lab, 9:00 AM–11:00 AM", "Lead scanner, 11:30 AM–1:00 PM", "Lab manager, 9:30 AM–1:30 PM"] }]);
+  staffSample([{ type: "changed", visit: usualEntry, oldVisit: usualEntry, was: ["Lead scanner, 11:00 AM–12:30 PM", "Lab manager, 9:00 AM–1:00 PM"], roles: ["Lab manager, 9:00 AM–1:00 PM"] }]);
+  staffSample([{ type: "changed", visit: lateEntry, oldVisit: usualEntry, was: ["Lead scanner, 11:00 AM–1:00 PM"], roles: ["Lead scanner, 11:30 AM–1:00 PM"] }]);
+  staffSample([{ type: "removed", visit: usualEntry, roles: ["Phlebotomy, 9:00 AM–9:30 AM", "Wet Lab, 9:30 AM–11:30 AM"] }]);
+  staffSample([{ type: "cancelled", visit: usualEntry, roles: ["Lead scanner, 11:00 AM–1:00 PM"], message: "Sorry for the late notice!", messageBy: "Alex" }]);
 
   const toMember = "RAs and other lab members (once lab member emails are switched on)";
   send(toMember, reviewResultEmail({ kind: "timeOff", ownerEmail: "jordan@usc.edu", reviewedBy: "alex@usc.edu", status: "approved", from: "2027-01-20", to: "2027-01-20", start: "14:00", end: "16:00", note: "Doctor's appointment", reviewNote: "Feel better!" }, nameOf));

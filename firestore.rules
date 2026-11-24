@@ -261,6 +261,16 @@ service cloud.firestore {
 
     // The USC academic calendar and staff holidays, which lab managers keep up to date under Website management.
     // Everyone in the lab reads them; until they're first saved here, the site uses the files published with it.
+    // Each person's own settings, such as which decided requests they've cleared: lists of short keys.
+    match /userPrefs/{prefsEmail} {
+      allow read: if isMember() && prefsEmail == email();
+      allow write: if isMember() && prefsEmail == email()
+        && request.resource.data.keys().hasOnly(['seenDecisions', 'clearedMine', 'clearedReview'])
+        && (!('seenDecisions' in request.resource.data) || (request.resource.data.seenDecisions is list && request.resource.data.seenDecisions.size() <= 2000))
+        && (!('clearedMine' in request.resource.data) || (request.resource.data.clearedMine is list && request.resource.data.clearedMine.size() <= 2000))
+        && (!('clearedReview' in request.resource.data) || (request.resource.data.clearedReview is list && request.resource.data.clearedReview.size() <= 2000));
+    }
+
     match /settings/{name} {
       allow read: if isMember();
       allow write: if isReviewer()
@@ -314,7 +324,9 @@ service cloud.firestore {
       // A choice that's still waiting can be replaced by whoever made it, or by a reviewer.
       allow create, update: if isMember()
         && (resource == null || resource.data.by == email() || isReviewer())
-        && request.resource.data.keys().hasOnly(['kind', 'ref', 'skip', 'none', 'message', 'by', 'byName', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['kind', 'ref', 'skip', 'none', 'message', 'bodies', 'by', 'byName', 'createdAt'])
+        // Staff emails a lab manager reworded: [{ email, text }].
+        && (!('bodies' in request.resource.data) || (request.resource.data.bodies is list && request.resource.data.bodies.size() <= 50))
         && request.resource.data.kind in ['requests', 'updates', 'cancellations', 'staff', 'reviewResult']
         && request.resource.data.ref is string && request.resource.data.ref.size() <= 200
         && request.resource.data.skip is list && request.resource.data.skip.size() <= 50

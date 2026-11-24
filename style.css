@@ -1314,6 +1314,9 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 .email-group { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-small); }
 .email-group h3 { margin: 0 0 6px; font-size: 15px; }
 .email-group .check-field { margin: 4px 0; }
+.email-edit-toggle { margin: 0 0 6px 26px; padding: 0; font-size: 13px; }
+.email-preview { margin: 0 0 10px 26px; padding: 8px 10px; border-radius: var(--radius-small); background: var(--surface-muted); font-size: 13px; }
+.email-preview-text { width: 100%; box-sizing: border-box; margin: 6px 0; font: inherit; }
 .email-none { margin: 10px 0; font-weight: 600; }
 .pi-warning { margin: 6px 0 8px; padding: 8px 12px; border: 1px solid #f87171; border-left: 4px solid #dc2626; border-radius: var(--radius-small); background: #fef2f2; color: #991b1b; font-size: 13px; }
 .pi-warning strong { display: block; }
@@ -1366,3 +1369,25 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 .data-table.fit .sort-button { white-space: normal; }
 .data-table.fit .person-cell { min-width: 0; }
 .data-table.fit .title-badge { white-space: normal; }
+
+/* Lab Calendar: staffing info for lab managers */
+.staffing-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: -8px 0 14px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-small); background: var(--surface); }
+.switch-field { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.switch-field input { width: 34px; height: 18px; margin: 0; appearance: none; -webkit-appearance: none; border-radius: 999px; background: var(--line); position: relative; cursor: pointer; transition: background 0.15s; }
+.switch-field input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #ffffff; transition: left 0.15s; }
+.switch-field input:checked { background: var(--accent); }
+.switch-field input:checked::after { left: 18px; }
+.staffing-options { display: contents; }
+.staffing-options[hidden] { display: none; }
+.inline-field { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.legend-dot { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; }
+.dot-ready { background: #16a34a; }
+.dot-tight { background: #eab308; }
+.dot-problem { background: #dc2626; }
+.slot.slot-reference { opacity: 0.55; border-style: dashed; }
+.legend-swatch.slot-reference { border: 1px dashed var(--muted); background: transparent; }
+.block-staffing { margin-top: 3px; padding-top: 3px; border-top: 1px solid rgba(0, 0, 0, 0.08); font-size: 11px; }
+.person-busy { position: absolute; z-index: 0; pointer-events: none; background: repeating-linear-gradient(45deg, rgba(100, 116, 139, 0.18) 0 6px, transparent 6px 12px); border-left: 3px solid #64748b; }
+.person-busy-label { display: block; padding: 2px 4px; color: #475569; font-size: 10px; font-weight: 600; }
+.visit-block.person-on { box-shadow: 0 0 0 3px #7c3aed; }
+.event-person-away { background: #e2e8f0; color: #334155; }

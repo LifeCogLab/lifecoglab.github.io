@@ -3,3 +3,6 @@
 .Rhistory
 # The full-size original; the site uses the cropped copies beside it.
 assets/logo.png
+
+# Made by deploy.sh each time it runs.
+apps-script/build/

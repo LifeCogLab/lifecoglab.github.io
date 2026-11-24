@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="style.css?v=39">
+  <link rel="stylesheet" href="style.css?v=41">
   <link rel="icon" type="image/png" href="assets/favicon.png">
 </head>
 <body>
@@ -85,6 +85,21 @@
       <div>
         <h2 id="calendar-scope" class="calendar-scope"></h2>
         <p id="calendar-hint" class="muted calendar-hint"></p>
+      </div>
+    </div>
+    <!-- Lab managers only, on the Lab Calendar: staffing information, off until it's turned on. -->
+    <div id="staffing-tools" class="staffing-tools" hidden>
+      <label class="switch-field"><input id="staffing-overlay" type="checkbox"> <span>Show staffing info</span></label>
+      <div id="staffing-options" class="staffing-options" hidden>
+        <label class="inline-field">See someone's schedule
+          <select id="person-overlay"></select>
+        </label>
+        <span class="calendar-legend">
+          <span class="legend-item"><span class="legend-dot dot-ready"></span>Can be staffed</span>
+          <span class="legend-item"><span class="legend-dot dot-tight"></span>Needs care</span>
+          <span class="legend-item"><span class="legend-dot dot-problem"></span>Can't be fully staffed</span>
+          <span class="legend-item"><span class="legend-swatch slot-reference"></span>No visit: who's free 9–11 Lab / 11–1 Scan</span>
+        </span>
       </div>
     </div>
 
@@ -177,8 +192,7 @@
           <button type="button" data-team="availability" aria-pressed="false">Available Times</button>
         </div>
         <div id="admin-tabs" class="pill-tabs" role="tablist" aria-label="Administrative schedules">
-          <button type="button" class="pill-tab" role="tab" data-admin="team" aria-selected="false">Team Availability</button>
-          <button type="button" class="pill-tab" role="tab" data-admin="staffing" aria-selected="true">Staffing</button>
+          <button type="button" class="pill-tab" role="tab" data-admin="team" aria-selected="true">Team Availability</button>
           <button type="button" class="pill-tab" role="tab" data-admin="checker" aria-selected="false">Availability Checker</button>
         </div>
       </div>
@@ -451,9 +465,9 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js" integrity="sha384-I1LYojsZ5RM1cOda44Z2h42Qa6YfsQ1XkXxREnhp4ueYBR/4d1pG1K+NZM537Vsj" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js" integrity="sha384-Ke0FJhH7LyRqDxZ0wt+/OXV38yfQVu7g9VPEEGjYmB4RVOY/ta04uecRhsMwT7V3" crossorigin="anonymous"></script>
   <script src="firebase-config.js?v=4"></script>
-  <script src="store.js?v=12"></script>
+  <script src="store.js?v=14"></script>
   <script src="parser.js?v=2"></script>
-  <script src="scheduling.js?v=28"></script>
-  <script src="app.js?v=61"></script>
+  <script src="scheduling.js?v=31"></script>
+  <script src="app.js?v=66"></script>
 </body>
 </html>

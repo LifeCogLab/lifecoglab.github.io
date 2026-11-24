@@ -20,7 +20,8 @@ const REVIEWER_EMAILS = [
   { key: "requests", label: "Requests to review", help: "Time off requests and schedule changes from RAs, within about 10 minutes. Your own aren't emailed to you." },
   { key: "schedules", label: "Class schedules added", help: "Within about 10 minutes of an RA adding their class schedule." },
   { key: "updates", label: "Saved schedule changes", help: "Changes and time off that Grad Students/Post-Docs save without review." },
-  { key: "cancellations", label: "Cancellations", help: "Straight away when a booking is cancelled (the visit stays open to rebook), or a booked or staffed visit is cancelled. Bookings themselves come from the booker's own email." },
+  { key: "bookings", label: "New bookings", help: "Within about 10 minutes of a booker sending the visit's Screener ID and any note on the booking form." },
+  { key: "cancellations", label: "Cancellations", help: "Straight away when a booking is cancelled (the visit stays open to rebook), or a booked or staffed visit is cancelled. New bookings are their own email (see New bookings)." },
   { key: "scanReminders", label: "Scan booking reminder", help: "At 8:30 AM each morning, which newly opened visit needs its scan booked." },
   { key: "unbookedSlots", label: "Unbooked visits", help: "At 8:30 AM, any open participant slot 3 days away that still isn't booked." },
   { key: "missingSchedules", label: "Missing class schedules", help: "A week before a semester starts, which RAs still haven't added their class schedule." },
@@ -956,4 +957,138 @@ function assignmentLines(appointment, assignment, nameOf) {
     lines.managers.push(`Lab manager: ${assignment.managers.map(nameOf).join(" and ")}, ${range(window.start, window.end)}, including the wrap-up at the end (${range(window.wrapUpStart, window.end)})`);
   }
   return lines;
+}
+
+// --- Staff emails ---
+// Shared by the Apps Script, which sends them, and the site, which shows a lab manager each email before it goes out
+// so they can change it.
+
+// What one person is told about one visit: the visit's times, how many visits are that day, each person's roles as
+// "Role, 9:00 AM–11:00 AM", and which portions have unusual times or a shortened scan.
+function visitStaffEntry(appointment, assignment, participants = 1) {
+  const window = visitWindow(appointment);
+  const people = {};
+  for (const role of staffRoles(appointment, assignment)) {
+    (people[role.email] = people[role.email] || []).push(`${role.role}, ${clockTime(role.from)}–${clockTime(role.to)}`);
+  }
+  return {
+    date: appointment.date,
+    visit: `${clockTime(window.start)} – ${clockTime(window.end)}`,
+    participants,
+    people,
+    unusual: {
+      lab: unusualTimes(appointment, "lab", true).length > 0,
+      scan: unusualTimes(appointment, "scan", true).length > 0,
+      visit: unusualTimes(appointment, undefined, true).length > 0,
+    },
+    short: Boolean(shortenedScan(appointment)),
+  };
+}
+
+// A person's roles on a visit as people read them: the lead, support and wanding/taping roles are all "Scanner",
+// listed once, and phlebotomy is "Phleb". Each has its times, or "Whole Visit" for a lab manager, and the scan is
+// marked ⚠️ [SHORT SCAN] when it's shortened. 🕒 [SEE TIME] marks a portion with unusual times.
+const STAFF_ROLE_NAMES = {
+  "Dry Lab": ["Dry Lab", "lab"], Phlebotomy: ["Phleb", "lab"], "Mobile phlebotomy": ["Phleb", "lab"], "Wet Lab": ["Wet Lab", "lab"],
+  "Lead scanner": ["Scanner", "scan"], "Support scanner": ["Scanner", "scan"], "Wanding/Taping": ["Scanner", "scan"],
+  "Lab manager": ["Lab Manager", "visit"],
+};
+
+function dutiesOf(roleTexts, visit = {}) {
+  const duties = [];
+  for (const text of roleTexts || []) {
+    const match = /^(.*), (.*?)–(.*)$/.exec(text);
+    const [name, part] = STAFF_ROLE_NAMES[match ? match[1] : text] || [match ? match[1] : text, ""];
+    const from = match ? match[2] : "";
+    const to = match ? match[3] : "";
+    const same = duties.find((duty) => duty.name === name);
+    if (same) continue;
+    duties.push({ name, part, from, to });
+  }
+  const unusual = visit.unusual || {};
+  return duties.map((duty) => {
+    const flags = [...(unusual[duty.part] ? [SEE_TIME] : []), ...(duty.part === "scan" && visit.short ? [SHORTENED_SCAN] : [])];
+    const short = (time) => time.replace(/ [AP]M$/, "");
+    const when = duty.part === "visit" ? "Whole Visit" : `${short(duty.from)}-${short(duty.to)}`;
+    return { name: duty.name, plain: `${duty.name} (${when})`, full: `${duty.name} (${[when, ...flags].join(" ")})` };
+  });
+}
+
+// "A", "A & B", "A, B, & C".
+function andList(items) {
+  if (items.length <= 2) return items.join(" & ");
+  return `${items.slice(0, -1).join(", ")}, & ${items[items.length - 1]}`;
+}
+
+// The changes for each person between what they were last told and now, keyed by email. `stillScheduled(key, date)`
+// tells a visit that's been unstaffed from one that's been cancelled. A change people wouldn't notice, such as
+// swapping lead and second scanner, isn't counted.
+function staffChanges(before, after, todayIso, stillScheduled) {
+  const changes = {};
+  const add = (email, change) => (changes[email] = changes[email] || []).push(change);
+  const read = (roles) => dutiesOf(roles).map((duty) => duty.plain).join("|");
+  for (const [key, visit] of Object.entries(after)) {
+    const old = before[key];
+    for (const [email, roles] of Object.entries(visit.people)) {
+      const was = old && old.people[email];
+      if (!was) add(email, { type: "assigned", key, visit, roles });
+      else if (read(was) !== read(roles) || old.date !== visit.date) add(email, { type: "changed", key, visit, roles, was, oldVisit: old });
+    }
+    for (const [email, roles] of Object.entries((old && old.people) || {})) {
+      if (!visit.people[email]) add(email, { type: "removed", key, visit: old, roles });
+    }
+  }
+  for (const [key, old] of Object.entries(before)) {
+    // Visits that have happened are simply forgotten.
+    if (after[key] || old.date < todayIso) continue;
+    const type = stillScheduled(key, old.date) ? "removed" : "cancelled";
+    for (const [email, roles] of Object.entries(old.people)) add(email, { type, key, visit: old, roles });
+  }
+  return changes;
+}
+
+// One visit's part of a staff email, as a single paragraph. `dateText` turns "2026-12-02" into "Wed, Dec 2, 2026".
+// **…** is bold.
+function staffChangeText(change, dateText) {
+  const when = (visit) => `${dateText(visit.date)} (${visit.visit} visit${visit.participants > 1 ? `, one of ${visit.participants} that day` : ""})`;
+  const now = dutiesOf(change.roles, change.visit);
+  if (change.type === "assigned") {
+    return `You've been staffed for the visit on ${when(change.visit)}. **Your assignment:** ${andList(now.map((duty) => duty.full))}.`;
+  }
+  if (change.type === "removed") {
+    return `You're no longer staffed for the visit on ${when(change.visit)}. You were: ${andList(now.map((duty) => duty.name))}.`;
+  }
+  if (change.type === "cancelled") {
+    return `The visit on ${when(change.visit)} has been **cancelled**. You were: ${andList(now.map((duty) => duty.name))}.`;
+  }
+  const was = dutiesOf(change.was, change.oldVisit);
+  if (change.oldVisit.date !== change.visit.date) {
+    return `Your visit has moved from ${dateText(change.oldVisit.date)} to ${when(change.visit)}. **Your assignment:** ${andList(now.map((duty) => duty.full))}.`;
+  }
+  const sameRoles = was.map((duty) => duty.name).join("|") === now.map((duty) => duty.name).join("|");
+  return sameRoles
+    ? `Your times have changed for the visit on ${when(change.visit)}. **Before:** ${andList(was.map((duty) => duty.plain))}. **Now:** ${andList(now.map((duty) => duty.full))}.`
+    : `Your assignment has changed for the visit on ${when(change.visit)}. **Before:** ${andList(was.map((duty) => duty.name))}. **Now:** ${andList(now.map((duty) => duty.full))}.`;
+}
+
+const STAFF_SUBJECTS = {
+  assigned: (date) => `Lab visit: you're staffed for ${date}`,
+  changed: (date) => `Lab visit: your assignment changed for ${date}`,
+  removed: (date) => `Lab visit: you're no longer staffed for ${date}`,
+  cancelled: (date) => `Lab visit cancelled: ${date}`,
+};
+
+// The whole email for one person, as { subject, lines }. A change can carry `message` (added by the lab manager) or
+// `custom` (the lab manager's own wording for that visit, used in place of the usual paragraph).
+function staffEmailContent(name, changes, dateText) {
+  const lines = [`Hi ${name},`, ""];
+  for (const change of changes) {
+    lines.push(...(change.custom ? change.custom.split("\n") : [staffChangeText(change, dateText)]));
+    if (change.message && !change.custom) lines.push(`**Message from ${change.messageBy}:** ${change.message}`);
+    lines.push("");
+  }
+  lines.push("Your Google Calendar has been updated to match. Questions? Ask the lab manager.");
+  const first = changes[0];
+  const subject = changes.length === 1 ? STAFF_SUBJECTS[first.type](dateText(first.visit.date)) : `Lab visits: ${changes.length} updates for you`;
+  return { subject, lines };
 }

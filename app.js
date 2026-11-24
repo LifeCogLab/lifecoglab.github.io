@@ -63,7 +63,10 @@ let staffHolidays = [];
 // Availability), and for reviewers under Administrative Schedules "unavailability", "availability", "staffing" and
 // "checker".
 let calendarView = "appointments";
-let adminView = "staffing";
+let adminView = "team";
+// Lab managers' staffing information on the Lab Calendar: off until it's turned on, and whose schedule is shown.
+let staffingOverlay = false;
+let overlayPerson = "";
 let teamView = "unavailability";
 let staffing = [];
 // The Staffing calendar's days whose slots have been changed from the usual ones.
@@ -88,6 +91,8 @@ let detailsSort = { key: "name", dir: 1 };
 // The roles ticked on the Availability calendar's filter, by leaf key.
 let availabilityRoles = new Set();
 let reviewFilter = "pending";
+let shownHealthWarning = false;
+let prefs = null;
 // How many requests are waiting, straight from the database as they come in; null until it's first heard.
 let livePending = null;
 let stopWatchingPending = null;
@@ -103,6 +108,19 @@ function el(tag, className, text) {
 
 function showMessage(text) {
   messagesEl.append(el("div", "message", text));
+}
+
+// Lab managers are told at the top of the page when the Apps Script's 10-minute checks have stopped or are failing,
+// since emails and calendar updates wait on them.
+function warnIfScriptStopped(health) {
+  if (!isReviewer() || !health || !health.frequentChecks || shownHealthWarning) return;
+  const last = Date.parse(health.frequentChecks);
+  const stopped = Date.now() - last > 60 * 60 * 1000;
+  if (!stopped && !health.frequentChecksErrors) return;
+  shownHealthWarning = true;
+  showMessage(stopped
+    ? `The automatic checks haven't run since ${new Date(last).toLocaleString()}, so emails and Google Calendar updates are waiting. In the Apps Script, check Executions and Triggers, or run setUp.`
+    : `The last automatic check had a problem: ${health.frequentChecksErrors}`);
 }
 
 // Messages show on whichever page the person is using.
@@ -391,7 +409,7 @@ function renderWeek() {
   const allDayCells = weekDates.map((date) => {
     const iso = dateToIso(date);
     if (labView) return labAllDay(iso);
-    if (appointmentsView) return availabilityAllDay(iso);
+    if (appointmentsView) return withPersonAllDay(availabilityAllDay(iso), iso);
     return availabilityView ? availabilityAllDay(iso) : unavailabilityAllDay(iso, colorOf);
   });
 
@@ -758,14 +776,15 @@ async function saveReferenceSlots(iso, slots) {
   await refresh();
 }
 
-function renderLabColumn(column, iso) {
+// With `reference`, these are the faded slots on the Lab Calendar's empty days, under Show staffing info.
+function renderLabColumn(column, iso, { reference = false } = {}) {
   const slots = referenceSlotsOn(iso);
   const items = slots.map((slot) => ({ start: slot.start, end: slot.end, slot }));
   for (const { block: item, lane, laneCount } of layoutDay(items)) {
     const { slot } = item;
     const result = evaluateSlot(iso, referenceVisit(iso, slot), slot.kind);
     const state = staffingState(result);
-    const node = el("div", `slot slot-${state}`);
+    const node = el("div", `slot slot-${state}${reference ? " slot-reference" : ""}`);
     placeBlock(node, item.start, item.end, lane, laneCount);
     node.append(
       el("strong", "", slot.kind === "lab" ? "Lab" : "Scan"),
@@ -1108,7 +1127,11 @@ function setDialogStatus(text, isError) {
   status.classList.toggle("error", Boolean(isError));
 }
 
+// Counts dialogs opened, so an action that goes on to open the next dialog (such as Confirm and staff) leaves it open.
+let dialogsOpened = 0;
+
 function openDialog(title, body, actions) {
+  dialogsOpened++;
   document.getElementById("dialog-title").textContent = title;
   document.getElementById("dialog-body").replaceChildren(...body);
   document.getElementById("dialog-actions").replaceChildren(...actions.filter(Boolean));
@@ -1119,9 +1142,10 @@ function openDialog(title, body, actions) {
 // Runs an action from a dialog. The dialog closes when it succeeds and stays open with the error when it doesn't.
 async function runDialogAction(button, action) {
   button.disabled = true;
+  const opened = dialogsOpened;
   try {
     const message = await action();
-    dialogEl.close();
+    if (dialogsOpened === opened) dialogEl.close();
     if (message) setCalendarStatus(message);
   } catch (error) {
     // Going back from the email pop-up isn't an error: the dialog just stays as it was.
@@ -1471,7 +1495,7 @@ async function cancelAppointment(appointment) {
   const doc = staffingFor(appointment);
   await confirmEmails("Cancel Visit", [
     cancellationGroup(appointment.date, appointment, "cancelled"),
-    staffGroup(appointment.date, visitKey(appointment), { appointment, doc }, {}),
+    staffGroup(appointment.date, visitKey(appointment), { appointment, doc }, {}, { cancelled: true }),
   ]);
   if (doc) await Store.deleteStaffing(visitKey(appointment));
   if (appointment.defaultFor) await Store.saveAppointment(appointment, appointmentData(appointment, { cancelled: true }));
@@ -1582,7 +1606,27 @@ function askEmails(title, groups) {
         const label = el("label", "check-field");
         label.append(box, `${person.name} (${person.email})${person.pi ? " · PI" : ""}`);
         section.append(label);
-        boxes.push({ group, person, box });
+        // Staff emails can be read, and reworded, before they go.
+        let text = null;
+        if (person.email_text) {
+          const toggle = el("button", "link-button email-edit-toggle", "See or edit email");
+          toggle.type = "button";
+          const editor = el("div", "email-preview");
+          editor.hidden = true;
+          text = el("textarea", "email-preview-text");
+          text.rows = 4;
+          text.maxLength = 2000;
+          text.value = person.email_text.body;
+          editor.append(el("div", "muted", person.email_text.greeting), text,
+            el("div", "muted", "Your Google Calendar has been updated to match. Questions? Ask the lab manager."));
+          toggle.addEventListener("click", () => {
+            editor.hidden = !editor.hidden;
+            toggle.textContent = editor.hidden ? "See or edit email" : "Hide email";
+          });
+          box.addEventListener("change", () => { toggle.hidden = !box.checked; if (!box.checked) editor.hidden = true; });
+          section.append(toggle, editor);
+        }
+        boxes.push({ group, person, box, text });
       }
       nodes.push(section);
     }
@@ -1612,7 +1656,10 @@ function askEmails(title, groups) {
       // email that the script hasn't used yet (such as "Don't send" from a change that ended up emailing nobody).
       finish(shown.map((group) => {
         const skip = boxes.filter((item) => item.group === group && !item.box.checked).map((item) => item.person.email);
-        return { kind: group.kind, ref: group.ref, skip, none: noneBox.checked || skip.length === group.recipients.length, message: text };
+        // Only reworded emails are saved, as the new paragraph for that person.
+        const bodies = boxes.filter((item) => item.group === group && item.text && item.box.checked && item.text.value.trim() && item.text.value.trim() !== item.person.email_text.body)
+          .map((item) => ({ email: item.person.email, text: item.text.value.trim() }));
+        return { kind: group.kind, ref: group.ref, skip, none: noneBox.checked || skip.length === group.recipients.length, message: text, ...(bodies.length ? { bodies } : {}) };
       }));
     });
     const back = el("button", "secondary", "Go back");
@@ -1647,25 +1694,24 @@ async function confirmEmails(title, groups) {
 const STAFF_EMAILS_OFF = "Staff emails are switched off while the system is being set up, so nothing will actually be sent to them yet.";
 
 // What each staff member is doing on a visit, so a change can be told apart from no change.
-function staffDuties(appointment, doc) {
-  const duties = {};
-  if (!appointment || !doc) return duties;
-  for (const role of staffRoles(appointment, doc)) (duties[role.email] = duties[role.email] || []).push(`${role.role} ${role.from}-${role.to}`);
-  return duties;
-}
-
 // The staff a change to a visit or its staffing emails: anyone whose roles or times change, is added or is taken off.
-function staffGroup(iso, key, before, after) {
-  if (iso < dateToIso(startOfDay(new Date()))) return { kind: "staff", ref: key, label: "Staff", recipients: [] };
-  const was = staffDuties(before.appointment, before.doc);
-  const now = staffDuties(after.appointment, after.doc);
-  const emails = [...new Set([...Object.keys(was), ...Object.keys(now)])]
-    .filter((email) => (was[email] || []).join("|") !== (now[email] || []).join("|"));
+// Each comes with the paragraph their email will have (worded as the Apps Script words it), which the lab manager can
+// change in the pop-up. `cancelled` is for the whole visit being cancelled, rather than just its staffing removed.
+function staffGroup(iso, key, before, after, { cancelled = false } = {}) {
+  const today = dateToIso(startOfDay(new Date()));
+  if (iso < today) return { kind: "staff", ref: key, label: "Staff", recipients: [] };
+  const count = visitsOn(iso).length;
+  const entry = (side) => (side.appointment && side.doc ? { [key]: visitStaffEntry({ ...side.appointment, date: iso }, side.doc, count) } : {});
+  const changes = staffChanges(entry(before), entry(after), today, () => !cancelled);
   return {
     kind: "staff",
     ref: key,
     label: "Staff on this visit",
-    recipients: emails.map((email) => ({ email, name: nameFor(email) })),
+    recipients: Object.entries(changes).map(([email, theirs]) => ({
+      email,
+      name: nameFor(email),
+      email_text: { greeting: `Hi ${nameFor(email)},`, body: theirs.map((change) => staffChangeText(change, formatIsoWithDay).replace(/\*\*/g, "")).join("\n\n") },
+    })),
     off: EMAIL_SWITCHES.staff ? "" : STAFF_EMAILS_OFF,
   };
 }
@@ -2873,6 +2919,8 @@ function renderAppointmentsColumn(column, iso) {
     const doc = status === "confirmed" ? staffingFor(appointment) : null;
     const team = doc ? staffLine(appointment, part, doc) : "";
     if (team) node.append(el("div", "slot-staff", team));
+    if (staffingOverlay && isReviewer() && !doc) node.append(blockStaffingInfo(iso, appointment, part));
+    if (staffingOverlay && overlayPerson && isOnVisit(overlayPerson, appointment)) node.classList.add("person-on");
     node.title = [heading.textContent, ...(short ? [time.textContent] : []), ...[...chips.children].map((chip) => chip.textContent), ...(team ? [team] : [])].join(" · ");
     // Lab managers can drag any block to move it, or drag its top or bottom edge to change when it starts or ends.
     if (isReviewer()) {
@@ -2895,6 +2943,77 @@ function renderAppointmentsColumn(column, iso) {
       makeClickable(node, () => openLabCalendarDialog(iso, appointment));
     }
     column.append(node);
+  }
+  renderStaffingOverlay(column, iso, visits);
+}
+
+// --- Staffing info on the Lab Calendar (lab managers) ---
+// Off by default, so the Lab Calendar looks the same as everyone else's. Turned on, each visit that isn't staffed yet
+// shows whether it can be staffed and who's suggested; a day with no visit shows the usual 9–11 Lab and 11–1 Scan
+// slots (faded) with who's free; and picking someone shades the times they can't be in the lab and outlines the visits
+// they're on. It replaced the separate Staffing calendar.
+
+function renderStaffingTools() {
+  const tools = document.getElementById("staffing-tools");
+  tools.hidden = !(isAppointmentsView() && isReviewer());
+  if (tools.hidden) return;
+  document.getElementById("staffing-overlay").checked = staffingOverlay;
+  document.getElementById("staffing-options").hidden = !staffingOverlay;
+  const select = document.getElementById("person-overlay");
+  const option = (value, text) => {
+    const node = el("option", "", text);
+    node.value = value;
+    return node;
+  };
+  select.replaceChildren(option("", "Nobody"), ...[...members].sort((a, b) => a.name.localeCompare(b.name)).map((member) => option(member.email, member.name)));
+  select.value = overlayPerson;
+}
+
+// A visit block's staffing line: whether it can be staffed, and who's suggested.
+function blockStaffingInfo(iso, appointment, part) {
+  const kinds = part ? [part] : ["lab", "scan"].filter((kind) => appointment[kind]);
+  const results = kinds.map((kind) => evaluateSlot(iso, appointment, kind));
+  const states = results.map(staffingState);
+  const state = states.includes("problem") ? "problem" : states.includes("tight") ? "tight" : "ready";
+  const worst = results[states.indexOf(state)];
+  const box = el("div", `block-staffing avail-status-${state}`);
+  box.append(el("div", "avail-status", statusText(worst)));
+  const suggested = kinds.map((kind) => suggestedStaff(iso, appointment, kind)).filter(Boolean).join(" · ");
+  if (suggested) box.append(el("div", "slot-suggested", `⭐ ${suggested}`));
+  return box;
+}
+
+function isOnVisit(email, appointment) {
+  const doc = staffingFor(appointment);
+  return Boolean(doc) && staffRoles(appointment, doc).some((role) => role.email === email);
+}
+
+// The times someone can't be in the lab on a day: their classes and standing conflicts, and part-day time off.
+function personBusyOn(email, iso) {
+  const date = new Date(`${iso}T12:00:00`);
+  const dayName = DAYS[(date.getDay() + 6) % 7];
+  return blocks.filter((block) => block.ownerEmail === email && block.from <= iso && (!block.to || iso <= block.to) && (block.type === "ooo"
+    ? Boolean(block.start)
+    : block.days.includes(dayName) && !(block.skipDates || []).includes(iso) && (block.type !== "class" || classesMeet(iso))));
+}
+
+function withPersonAllDay(cell, iso) {
+  if (!staffingOverlay || !overlayPerson) return cell;
+  const away = blocks.find((block) => block.ownerEmail === overlayPerson && block.type === "ooo" && !block.start && block.from <= iso && iso <= block.to);
+  if (away) cell.append(el("div", "event event-person-away", `${nameFor(overlayPerson)}: out of office${away.status === "pending" ? " (pending)" : ""}`));
+  return cell;
+}
+
+function renderStaffingOverlay(column, iso, visits) {
+  if (!staffingOverlay) return;
+  if (!visits.length) renderLabColumn(column, iso, { reference: true });
+  if (!overlayPerson) return;
+  for (const block of personBusyOn(overlayPerson, iso)) {
+    const band = el("div", "person-busy");
+    placeBlock(band, block.start, block.end, 0, 1);
+    band.title = `${nameFor(overlayPerson)} can't be in the lab ${formatTime(block.start)} – ${formatTime(block.end)}${block.note ? ` (${block.note})` : ""}`;
+    band.append(el("span", "person-busy-label", block.type === "class" ? "Class" : block.type === "ooo" ? "Time off" : block.note || "Conflict"));
+    column.prepend(band);
   }
 }
 
@@ -3090,12 +3209,18 @@ function openConfirmDialog(iso, appointment) {
   const notes = staffNotes(appointment);
   body.push(el("h3", "", "Notes for Staff"), ...bookerNoteLine(appointment, (key) => notes.copy(key, appointment.bookerNote)), notes.node);
   body.push(visitAvailability(iso, appointment));
+  // Confirming goes straight on to staffing, with the suggested team filled in. Once the booking form is set up, the
+  // appointment and its Screener ID are already on LCL Participant Appointments, so there's nothing to add by hand.
+  const confirm = (thenStaff) => async () => {
+    await saveVisitTimes(appointment, times.read(), { confirmed: true, confirmedBy: me.email, confirmedAt: new Date().toISOString(), requestedStart: "", ...notes.read() });
+    const confirmed = freshVisit(iso, appointment);
+    if (!calendarSettings.bookingForm) openConfirmedReminder(iso, confirmed);
+    else if (thenStaff) openStaffingDialog(iso, confirmed);
+    return thenStaff ? "" : "Booking confirmed.";
+  };
   openDialog("Confirm Booking", body, [
-    dialogButton("Confirm booking", "primary", async () => {
-      await saveVisitTimes(appointment, times.read(), { confirmed: true, confirmedBy: me.email, confirmedAt: new Date().toISOString(), requestedStart: "", ...notes.read() });
-      openConfirmedReminder(iso, freshVisit(iso, appointment));
-      return "";
-    }),
+    dialogButton("Confirm and staff", "primary", confirm(true)),
+    dialogButton("Confirm only", "secondary", confirm(false)),
     cancelButton(iso, appointment, () => openConfirmDialog(iso, appointment)),
   ]);
 }
@@ -3196,13 +3321,17 @@ function openBookDialog(iso, appointment) {
   };
   select.append(option("", `As scheduled (${formatTime(start)})`), ...REQUESTABLE_STARTS.filter((time) => time !== start)
     .map((time) => option(time, `Ask for ${formatTime(time)} (needs a lab manager's approval)`)));
-  const note = bookerNoteField();
+  // Once the booking form exists, the note goes in the form with the Screener ID instead of here.
+  const usesForm = Boolean(bookingFormUrl(iso, appointment));
+  const note = usesForm ? { node: null, read: () => "" } : bookerNoteField();
   openDialog("Book This Slot", [
     ...visitHeading(iso, appointment),
     el("p", "", partsText(appointment)),
     labeled("Start time", select),
-    labeled("Note (optional)", note.node),
-    el("p", "notice", "Don't enter participant information here. After you book, a new tab shows your email to the reviewers and which account it sends from, then opens it in Gmail: add the Screener ID and send it."),
+    ...(usesForm ? [] : [labeled("Note (optional)", note.node)]),
+    el("p", "notice", bookingFormUrl(iso, appointment)
+      ? "Don't enter participant information here. After you book, a short form opens in a new tab with this visit filled in: add the Screener ID there, and any note for the lab managers, and submit it."
+      : "Don't enter participant information here. After you book, a new tab shows your email to the reviewers and which account it sends from, then opens it in Gmail: add the Screener ID and send it."),
   ], [
     dialogButton("Mark booked", "primary", async () => {
       const requested = select.value;
@@ -3224,10 +3353,11 @@ function openBookDialog(iso, appointment) {
         if (tab) tab.close();
         throw error;
       }
-      const opened = showEmailSteps(tab, bookingEmailParts(iso, appointment, requested, text));
-      const next = opened
-        ? "Your email to the reviewers is ready in the new tab: copy it into Gmail, add the Screener ID and send it."
-        : "Your browser blocked the new tab, so use Email booking details to reviewers on your booking.";
+      const form = bookingFormUrl(iso, appointment);
+      const opened = form ? showBookingForm(tab, form) : showEmailSteps(tab, bookingEmailParts(iso, appointment, requested, text));
+      const next = !opened
+        ? `Your browser blocked the new tab, so use ${form ? "Add Screener ID" : "Email booking details to reviewers"} on your booking.`
+        : form ? "Add the Screener ID (and any note) on the form that opened in a new tab, and submit it." : "Your email to the reviewers is ready in the new tab: copy it into Gmail, add the Screener ID and send it.";
       return requested ? `Booked, asking to start at ${formatTime(requested)}. ${next}` : `Booked. ${next}`;
     }),
     closeButton(),
@@ -3328,12 +3458,31 @@ function gmailDraftUrl(email, pasting) {
 }
 
 function bookingEmailLink(iso, appointment) {
-  const button = el("button", "secondary small", "Email booking details to reviewers");
+  const form = bookingFormUrl(iso, appointment);
+  const button = el("button", "secondary small", form ? "Add Screener ID" : "Email booking details to reviewers");
   button.type = "button";
   button.addEventListener("click", () => {
-    showEmailSteps(openDraftTab(), bookingEmailParts(iso, appointment, appointment.requestedStart || ""));
+    if (form) showBookingForm(openDraftTab(), form);
+    else showEmailSteps(openDraftTab(), bookingEmailParts(iso, appointment, appointment.requestedStart || ""));
   });
   return button;
+}
+
+// The booking form's link with this visit filled in, or "" until the Apps Script has made the form. The Screener ID
+// goes in the form, which only the lab managers see; the site never has it. The visit field ends with its date and key
+// so the script can find it.
+function bookingFormUrl(iso, appointment) {
+  const form = calendarSettings.bookingForm;
+  if (!form || !form.url || !form.placeholder) return "";
+  const visit = `${formatIsoWithDay(iso)}, ${visitTimesText(appointment)} · ${iso} · ${visitKey(appointment)}`;
+  return form.url.replace(form.placeholder, encodeURIComponent(visit));
+}
+
+function showBookingForm(tab, url) {
+  if (!tab || tab.closed) return false;
+  tab.opener = null;
+  tab.location.href = url;
+  return true;
 }
 
 // A blank tab for the booker's email, or null if the browser blocks it. If it's blocked, the button on the visit
@@ -3499,7 +3648,6 @@ const VIEW_TEXT = {
   mine: ["My Availability", "Blocks are times you can't be in the lab. Drag across empty space to add one, or click or drag a block to change it."],
   unavailability: ["When Lab Members Are Unavailable", "Times people can't be in the lab. Drag across empty space to add one, or click or drag a block to change it."],
   availability: ["When Lab Members Are Available", "Free time between 8 AM and 6 PM. Click a block to see someone's training."],
-  staffing: ["Staffing", "For reference: who's free for a 9–11 AM Lab and 11 AM–1 PM Scan, every day. Book and staff visits on the Lab Calendar."],
   checker: ["Availability Checker", "Who's free at any time. Test a time range as a visit to see whether it could be staffed."],
 };
 
@@ -3529,6 +3677,7 @@ function setCalendarView(view) {
   if (view === "appointments") hintEl.replaceChildren(...appointmentsHint());
   else hintEl.textContent = hint;
   setCalendarStatus("");
+  renderStaffingTools();
   renderFilters();
   renderWeek();
   renderMiniMonth();
@@ -4187,24 +4336,36 @@ function myRequests() {
   return list.sort((a, b) => order[a.request.status] - order[b.request.status] || String(b.request.reviewedAt || b.request.createdAt || b.request.from || "").localeCompare(String(a.request.reviewedAt || a.request.createdAt || a.request.from || "")));
 }
 
-function seenKey() {
-  return `lcl-seen-decisions:${me.email}`;
+// --- Per-person settings ---
+// Which decided requests you've seen or cleared are kept in the database (userPrefs/<your email>), so they follow you
+// to any computer. Ones saved in this browser before that are picked up the first time.
+const PREF_KEYS = { seenDecisions: "lcl-seen-decisions", clearedMine: "lcl-cleared-mine", clearedReview: "lcl-cleared-review" };
+
+function readPref(key) {
+  if (prefs && Array.isArray(prefs[key])) return prefs[key];
+  try {
+    const saved = localStorage.getItem(`${PREF_KEYS[key]}:${me.email}`);
+    return saved === null ? null : JSON.parse(saved);
+  } catch (error) {
+    return null;
+  }
+}
+
+function writePref(key, value) {
+  prefs = { ...(prefs || {}), [key]: value };
+  Store.savePrefs(me.email, { [key]: value }).catch(() => {
+    // Not saved this time; it's saved again with the next change.
+  });
 }
 
 // What's been seen, as "key:status". The first time, everything already decided counts as seen, so nobody starts with
 // a badge for old requests.
 function seenDecisions() {
+  const saved = readPref("seenDecisions");
+  if (saved) return new Set(saved);
   const decided = myRequests().filter((item) => item.request.status !== "pending").map((item) => `${item.key}:${item.request.status}`);
-  try {
-    const saved = localStorage.getItem(seenKey());
-    if (saved === null) {
-      localStorage.setItem(seenKey(), JSON.stringify(decided));
-      return new Set(decided);
-    }
-    return new Set(JSON.parse(saved));
-  } catch (error) {
-    return new Set(decided);
-  }
+  writePref("seenDecisions", decided);
+  return new Set(decided);
 }
 
 function unseenDecisions() {
@@ -4216,20 +4377,16 @@ function unseenDecisions() {
 
 // --- Clearing decided requests ---
 // Approved and declined requests can be cleared from view, and clear themselves 30 days after they're decided.
-// What's cleared is remembered per person in this browser only, and a request whose decision changes comes back.
+// What's cleared is remembered per person (see readPref), and a request whose decision changes comes back.
 const CLEAR_AFTER_DAYS = 30;
 const showCleared = { mine: false, review: false };
 
 function clearedKey(list) {
-  return `lcl-cleared-${list}:${me.email}`;
+  return list === "mine" ? "clearedMine" : "clearedReview";
 }
 
 function clearedIds(list) {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(clearedKey(list)) || "[]"));
-  } catch (error) {
-    return new Set();
-  }
+  return new Set(readPref(clearedKey(list)) || []);
 }
 
 function decidedLongAgo(request) {
@@ -4248,11 +4405,7 @@ function saveCleared(list, items, cleared) {
     if (cleared) ids.add(`${key}:${request.status}`);
     else ids.delete(`${key}:${request.status}`);
   }
-  try {
-    localStorage.setItem(clearedKey(list), JSON.stringify([...ids]));
-  } catch (error) {
-    // Without storage, cleared requests come back when the page is reloaded.
-  }
+  writePref(clearedKey(list), [...ids]);
 }
 
 function clearButton(list, items, text, after) {
@@ -4281,11 +4434,7 @@ function clearedBar(list, clearable, clearedCount, clearAllText, after) {
 
 function markRequestsSeen() {
   const decided = myRequests().filter((item) => item.request.status !== "pending").map((item) => `${item.key}:${item.request.status}`);
-  try {
-    localStorage.setItem(seenKey(), JSON.stringify(decided));
-  } catch (error) {
-    // Without storage the badge just shows until the page is reloaded.
-  }
+  if (decided.join("|") !== [...seenDecisions()].join("|")) writePref("seenDecisions", decided);
   updateRequestBadges(0);
 }
 
@@ -5009,7 +5158,7 @@ function buildBlocks() {
 // Only reviewers ask for everyone's entries. For anyone else the database refuses that request.
 async function refresh() {
   const scope = isReviewer() ? undefined : me.email;
-  const [people, loadedAvailability, loadedTimeOff, loadedChanges, loadedAppointments, loadedStaffing, contacts, profile, loadedDirectory, loadedProfiles, loadedPrivate, loadedSettings, loadedNoClasses, loadedReference] = await Promise.all([
+  const [people, loadedAvailability, loadedTimeOff, loadedChanges, loadedAppointments, loadedStaffing, contacts, profile, loadedDirectory, loadedProfiles, loadedPrivate, loadedSettings, loadedNoClasses, loadedReference, loadedPrefs] = await Promise.all([
     isReviewer() ? Store.listMembers() : [me],
     Store.listAvailability(scope),
     Store.listTimeOff(scope),
@@ -5028,11 +5177,14 @@ async function refresh() {
     Store.getSettings(),
     Store.listNoClasses(isReviewer() ? undefined : me.email),
     isReviewer() ? Store.listReferenceDays() : [],
+    Store.getPrefs(me.email),
   ]);
+  prefs = loadedPrefs;
   referenceDays = loadedReference;
   noClasses = loadedNoClasses;
   // Calendars saved under Website management replace the ones published with the site.
   calendarSettings = loadedSettings;
+  warnIfScriptStopped(loadedSettings.health);
   if (loadedSettings.academic) {
     semesters = loadedSettings.academic.semesters;
     events = loadedSettings.academic.events;
@@ -5165,7 +5317,9 @@ async function handleAuthChange(user) {
   memberPickerOpen = false;
   teamShown = new Set();
   calendarView = "appointments";
-  adminView = "staffing";
+  adminView = "team";
+  staffingOverlay = false;
+  overlayPerson = "";
   teamView = "unavailability";
   messagesEl.replaceChildren();
   if (academicError) showMessage(academicError);
@@ -5273,6 +5427,16 @@ function wireUpEvents() {
       renderDirectory();
     });
   }
+  document.getElementById("staffing-overlay").addEventListener("change", (event) => {
+    staffingOverlay = event.target.checked;
+    if (!staffingOverlay) overlayPerson = "";
+    renderStaffingTools();
+    renderWeek();
+  });
+  document.getElementById("person-overlay").addEventListener("change", (event) => {
+    overlayPerson = event.target.value;
+    renderWeek();
+  });
   for (const button of document.querySelectorAll("[data-admin]")) {
     button.addEventListener("click", () => setAdminView(button.dataset.admin));
   }

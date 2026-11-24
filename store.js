@@ -143,11 +143,22 @@ const Store = (() => {
     },
 
     // The USC academic calendar and staff holidays as lab managers last saved them, or null for either not saved yet.
+    // scriptHealth (when the Apps Script's runs last finished) and bookingForm (the link to its booking form) are saved
+    // by the Apps Script itself.
     async getSettings() {
-      const [academic, holidays] = await Promise.all(["academicCalendar", "staffHolidays"].map((name) => db.collection("settings").doc(name).get()));
-      return { academic: academic.exists ? academic.data() : null, holidays: holidays.exists ? holidays.data() : null };
+      const names = ["academicCalendar", "staffHolidays", "scriptHealth", "bookingForm"];
+      const [academic, holidays, health, bookingForm] = (await Promise.all(names.map((name) => db.collection("settings").doc(name).get())))
+        .map((doc) => (doc.exists ? doc.data() : null));
+      return { academic, holidays, health, bookingForm };
     },
     saveSetting: (name, data) => db.collection("settings").doc(name).set(data),
+
+    // Your own per-person settings, such as which decided requests you've cleared. Only you can read or change them.
+    async getPrefs(email) {
+      const doc = await db.collection("userPrefs").doc(email).get();
+      return doc.exists ? doc.data() : {};
+    },
+    savePrefs: (email, data) => db.collection("userPrefs").doc(email).set(data, { merge: true }),
 
     // The lab directory (name, directory role and phone), which everyone in the lab can see.
     listDirectory: async () => (await db.collection("directory").get()).docs.map((doc) => ({ email: doc.id, ...doc.data() })),
