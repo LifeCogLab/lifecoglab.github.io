@@ -1694,6 +1694,11 @@ async function confirmEmails(title, groups) {
 const STAFF_EMAILS_OFF = "Staff emails are switched off while the system is being set up, so nothing will actually be sent to them yet.";
 
 // What each staff member is doing on a visit, so a change can be told apart from no change.
+// An email's text without its bold (**) and highlight (==) marks, for reading and editing in the pop-up.
+function plainEmailText(text) {
+  return text.replace(/\*\*|==/g, "");
+}
+
 // The staff a change to a visit or its staffing emails: anyone whose roles or times change, is added or is taken off.
 // Each comes with the paragraph their email will have (worded as the Apps Script words it), which the lab manager can
 // change in the pop-up. `cancelled` is for the whole visit being cancelled, rather than just its staffing removed.
@@ -1710,7 +1715,7 @@ function staffGroup(iso, key, before, after, { cancelled = false } = {}) {
     recipients: Object.entries(changes).map(([email, theirs]) => ({
       email,
       name: nameFor(email),
-      email_text: { greeting: `Hi ${nameFor(email)},`, body: theirs.map((change) => staffChangeText(change, formatIsoWithDay).replace(/\*\*/g, "")).join("\n\n") },
+      email_text: { greeting: `Hi ${nameFor(email)},`, body: theirs.map((change) => plainEmailText(staffChangeText(change, formatIsoWithDay))).join("\n\n") },
     })),
     off: EMAIL_SWITCHES.staff ? "" : STAFF_EMAILS_OFF,
   };
@@ -3252,8 +3257,40 @@ function openScheduledDialog(iso, appointment) {
   openDialog("Scheduled Visit", body, [
     switchButton(doc ? "Change staffing" : "Staff this visit", "primary", () => openStaffingDialog(iso, appointment)),
     switchButton("Change times", "secondary", () => openEditScheduledDialog(iso, appointment)),
+    doc && iso >= dateToIso(startOfDay(new Date())) ? dialogButton("Re-send staff emails", "secondary", () => resendStaffEmails(iso, appointment, doc)) : null,
     cancelButton(iso, appointment, () => openScheduledDialog(iso, appointment)),
   ]);
+}
+
+// Lab managers can email a visit's staff their assignment again, with nothing changed: the usual pop-up lists everyone
+// on it, to untick, reword or add a message to. The Apps Script sends them within a few seconds (see staffResends).
+async function resendStaffEmails(iso, appointment, doc) {
+  const key = visitKey(appointment);
+  const entry = visitStaffEntry({ ...appointment, date: iso }, doc, visitsOn(iso).length);
+  const recipients = Object.entries(entry.people).map(([email, roles]) => ({
+    email,
+    name: nameFor(email),
+    email_text: { greeting: `Hi ${nameFor(email)},`, body: plainEmailText(staffChangeText({ type: "reminder", key, visit: entry, roles }, formatIsoWithDay)) },
+  }));
+  const [choice] = await askEmails("Re-send Staff Emails", [{ kind: "staff", ref: key, label: "Staff on this visit", recipients }]) || [null];
+  if (!choice) {
+    const stop = new Error("Nothing was sent.");
+    stop.calledOff = true;
+    throw stop;
+  }
+  const chosen = recipients.filter((person) => !choice.none && !choice.skip.includes(person.email));
+  if (!chosen.length) return "Nothing was sent, since everyone was unticked.";
+  await Store.createStaffResend({
+    visitKey: key,
+    date: iso,
+    recipients: chosen.map((person) => ({ email: person.email, text: ((choice.bodies || []).find((body) => body.email === person.email) || {}).text || "" })),
+    message: choice.message || "",
+    by: me.email,
+    byName: me.name,
+    createdAt: new Date().toISOString(),
+  });
+  pingSync();
+  return `Re-sending to ${andList(chosen.map((person) => person.name))}. They'll usually get it within a minute (at most 10).`;
 }
 
 // One Cancel button for a visit. When there's more than one way to cancel it (the booking, one part, or the whole

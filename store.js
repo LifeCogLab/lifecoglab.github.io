@@ -100,6 +100,8 @@ const Store = (() => {
     // Who to leave off, and any message for, the email about something someone just did. The Apps Script reads these
     // when it sends that email, then deletes them.
     saveEmailChoice: (id, data) => db.collection("emailChoices").doc(id).set(data),
+    // A lab manager asking for a visit's staff emails to be sent again; the Apps Script sends them and deletes it.
+    createStaffResend: (data) => db.collection("staffResends").add(data),
     deleteChangeRequest: (id) => db.collection("changeRequests").doc(id).delete(),
     decideChangeRequest: (id, decision) => db.collection("changeRequests").doc(id).update(decision),
 

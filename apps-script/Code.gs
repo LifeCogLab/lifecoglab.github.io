@@ -347,7 +347,7 @@ function checkHealth(now) {
     to: CONFIG.labManagerEmail,
     subject: "Lab schedule: the 10-minute checks have stopped",
     lines: [
-      `The script's 10-minute checks last ran ${bold(emailDateWithDay(isoOf(new Date(last.at))))} at ${bold(emailTime(Utilities.formatDate(new Date(last.at), CONFIG.timeZone, "HH:mm")))}, so staff emails, request emails and calendar updates are waiting.`,
+      `The script's 10-minute checks last ran ${dateMark(emailDateWithDay(isoOf(new Date(last.at))))} at ${dateMark(emailTime(Utilities.formatDate(new Date(last.at), CONFIG.timeZone, "HH:mm")))}, so staff emails, request emails and calendar updates are waiting.`,
       "",
       `Open the Apps Script, check ${bold("Executions")} for errors and ${bold("Triggers")} for a frequentChecks trigger every 10 minutes. Running ${bold("setUp")} once puts the triggers back.`,
     ],
@@ -408,6 +408,7 @@ function frequentChecks() {
       [CONFIG.visitsCalendarName, () => site && syncVisits(site, staffing, today)],
       [CONFIG.confirmedCalendarName, () => site && syncConfirmed(site, staffing, today)],
       ["Staff emails", () => site && notifyStaff(site, staffing, today)],
+      ["Re-sent staff emails", () => site && CONFIG.inviteStaff && resendStaffEmails(site, staffing)],
       ["Booking form", () => site && checkBookingForm(site, today)],
       [CONFIG.appointmentsCalendarName, () => site && syncAppointments(site, today)],
     ]);
@@ -436,6 +437,8 @@ function quickSync() {
     const today = new Date();
     checkCancellations(site, staffing, today);
     syncVisits(site, staffing, today);
+    // A lab manager asked for these, so they go straight away.
+    if (CONFIG.inviteStaff) resendStaffEmails(site, staffing);
   });
 }
 
@@ -1218,7 +1221,7 @@ function celebrationsEmail(items) {
   const lines = [];
   for (const item of items) {
     const date = item.kind === "birthday" ? emailDateWithDay(item.iso) : `${graduationText(item.profile.graduation)}, marked on ${emailDateWithDay(item.iso)}`;
-    lines.push(`${bold(celebrationTitle(item))}: ${highlight(bold(item.when))} (${bold(date)})`, ...favoritesLines(item.profile).map((line) => `  ${line.replace(/^([^:]+:)/, (label) => bold(label))}`), "");
+    lines.push(`${bold(celebrationTitle(item))}: ${highlight(bold(item.when))} (${dateMark(date)})`, ...favoritesLines(item.profile).map((line) => `  ${line.replace(/^([^:]+:)/, (label) => bold(label))}`), "");
   }
   lines.push(`See everyone's details in the Lab Directory: ${CONFIG.siteUrl}`);
   return { subject, lines };
@@ -1583,6 +1586,32 @@ function staffSnapshot(rules, appointments, holidays, staffing, today) {
     snapshot[doc.visitKey] = rules.visitStaffEntry({ ...appointment, date: doc.date }, doc, visits.length);
   }
   return snapshot;
+}
+
+// Staff emails a lab manager asked to send again from a visit on the site, whether or not anything changed. Each
+// person gets their assignment as it is now, or the lab manager's own wording, plus any message.
+function resendStaffEmails(site, staffing) {
+  const requests = listCollection("staffResends");
+  if (!requests.length) return;
+  const { rules } = site;
+  const nameOf = (email) => (site.members.find((member) => member.id === email) || {}).name || email;
+  let sent = 0;
+  for (const request of requests) {
+    deleteDocument(`staffResends/${request.id}`);
+    const visits = visitsOn(rules, request.date, site.appointments, site.holidays);
+    const appointment = visits.find((visit) => rules.visitKey(visit) === request.visitKey);
+    const doc = staffing.find((item) => item.visitKey === request.visitKey);
+    if (!appointment || !doc) continue;
+    const entry = rules.visitStaffEntry({ ...appointment, date: request.date }, doc, visits.length);
+    for (const { email, text } of request.recipients || []) {
+      if (!entry.people[email]) continue;
+      const change = { type: "reminder", key: request.visitKey, visit: entry, roles: entry.people[email],
+        ...(text ? { custom: text } : {}), ...(request.message ? { message: request.message, messageBy: request.byName || request.by } : {}) };
+      sendEmail({ to: email, ...staffEmail(rules, nameOf(email), [change]) });
+      sent++;
+    }
+  }
+  console.log(`Re-sent ${sent} staff email(s).`);
 }
 
 // The email for one person, worded by staffEmailContent in scheduling.js, so the site can show lab managers the same

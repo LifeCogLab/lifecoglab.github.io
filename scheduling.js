@@ -1048,12 +1048,16 @@ function staffChanges(before, after, todayIso, stillScheduled) {
 }
 
 // One visit's part of a staff email, as a single paragraph. `dateText` turns "2026-12-02" into "Wed, Dec 2, 2026".
-// **…** is bold.
+// **…** is bold and ==…== highlighted, as the visit's date and times are in every email.
 function staffChangeText(change, dateText) {
-  const when = (visit) => `${dateText(visit.date)} (${visit.visit} visit${visit.participants > 1 ? `, one of ${visit.participants} that day` : ""})`;
+  const mark = (text) => `**==${text}==**`;
+  const when = (visit) => `${mark(`${dateText(visit.date)} (${visit.visit})`)}${visit.participants > 1 ? `, one of ${visit.participants} visits that day` : ""}`;
   const now = dutiesOf(change.roles, change.visit);
   if (change.type === "assigned") {
     return `You've been staffed for the visit on ${when(change.visit)}. **Your assignment:** ${andList(now.map((duty) => duty.full))}.`;
+  }
+  if (change.type === "reminder") {
+    return `A reminder that you're staffed for the visit on ${when(change.visit)}. **Your assignment:** ${andList(now.map((duty) => duty.full))}.`;
   }
   if (change.type === "removed") {
     return `You're no longer staffed for the visit on ${when(change.visit)}. You were: ${andList(now.map((duty) => duty.name))}.`;
@@ -1063,7 +1067,7 @@ function staffChangeText(change, dateText) {
   }
   const was = dutiesOf(change.was, change.oldVisit);
   if (change.oldVisit.date !== change.visit.date) {
-    return `Your visit has moved from ${dateText(change.oldVisit.date)} to ${when(change.visit)}. **Your assignment:** ${andList(now.map((duty) => duty.full))}.`;
+    return `Your visit has moved from ${mark(dateText(change.oldVisit.date))} to ${when(change.visit)}. **Your assignment:** ${andList(now.map((duty) => duty.full))}.`;
   }
   const sameRoles = was.map((duty) => duty.name).join("|") === now.map((duty) => duty.name).join("|");
   return sameRoles
@@ -1072,10 +1076,11 @@ function staffChangeText(change, dateText) {
 }
 
 const STAFF_SUBJECTS = {
-  assigned: (date) => `Lab visit: you're staffed for ${date}`,
-  changed: (date) => `Lab visit: your assignment changed for ${date}`,
-  removed: (date) => `Lab visit: you're no longer staffed for ${date}`,
-  cancelled: (date) => `Lab visit cancelled: ${date}`,
+  assigned: (date) => `Study Visit: you're staffed for ${date}`,
+  reminder: (date) => `Study Visit: reminder that you're staffed for ${date}`,
+  changed: (date) => `Study Visit: your assignment changed for ${date}`,
+  removed: (date) => `Study Visit: you're no longer staffed for ${date}`,
+  cancelled: (date) => `Study Visit: cancelled for ${date}`,
 };
 
 // The whole email for one person, as { subject, lines }. A change can carry `message` (added by the lab manager) or
@@ -1089,6 +1094,6 @@ function staffEmailContent(name, changes, dateText) {
   }
   lines.push("Your Google Calendar has been updated to match. Questions? Ask the lab manager.");
   const first = changes[0];
-  const subject = changes.length === 1 ? STAFF_SUBJECTS[first.type](dateText(first.visit.date)) : `Lab visits: ${changes.length} updates for you`;
+  const subject = changes.length === 1 ? STAFF_SUBJECTS[first.type](dateText(first.visit.date)) : `Study Visits: ${changes.length} updates for you`;
   return { subject, lines };
 }

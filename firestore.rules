@@ -321,6 +321,18 @@ service cloud.firestore {
 
     // Who to leave off the email about something someone just did, and any message to add. Anyone in the lab saves
     // their own; only reviewers (and the Apps Script) read them.
+    // Lab managers asking for a visit's staff emails to be sent again. The Apps Script sends them and deletes these.
+    match /staffResends/{id} {
+      allow read, delete: if isReviewer();
+      allow create: if isReviewer()
+        && request.resource.data.keys().hasOnly(['visitKey', 'date', 'recipients', 'message', 'by', 'byName', 'createdAt'])
+        && request.resource.data.visitKey is string && request.resource.data.date is string
+        && request.resource.data.recipients is list && request.resource.data.recipients.size() > 0 && request.resource.data.recipients.size() <= 20
+        && request.resource.data.message is string && request.resource.data.message.size() <= 1000
+        && request.resource.data.by == email()
+        && request.resource.data.byName is string && request.resource.data.createdAt is string;
+    }
+
     match /emailChoices/{id} {
       allow read, delete: if isReviewer();
       // A choice that's still waiting can be replaced by whoever made it, or by a reviewer.
