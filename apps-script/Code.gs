@@ -516,6 +516,18 @@ function sendEmail({ to, subject, lines, footer = [] }) {
   }
 }
 
+// Run this from the editor to check emails go through Gmail: it sends one short email to CONFIG.testEmailsTo, which
+// then shows in that account's Sent folder, and says in the log which way it went.
+function checkEmailSending() {
+  const subject = "[TEST] Lab schedule: checking emails are kept in Sent";
+  try {
+    Gmail.Users.Messages.send({ raw: Utilities.base64EncodeWebSafe(mimeMessage(CONFIG.testEmailsTo, subject, "This is a test.", "<p>This is a test.</p>"), Utilities.Charset.UTF_8) }, "me");
+    console.log(`Sent through Gmail to ${CONFIG.testEmailsTo}. It should be in Sent.`);
+  } catch (error) {
+    console.log(`Gmail couldn't send it: ${error.message}`);
+  }
+}
+
 // A plain-text and HTML email, as Gmail's send takes it.
 function mimeMessage(to, subject, body, htmlBody) {
   const boundary = `lab-${Utilities.getUuid()}`;
