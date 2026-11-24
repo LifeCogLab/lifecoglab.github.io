@@ -109,6 +109,8 @@ One-time setup on the Mac that deploys:
 
 After a deploy that adds a Google permission (`appsscript.json`'s `oauthScopes`), run **setUp** once in the Apps Script editor to allow it.
 
+**Emails** are sent through Gmail from the script owner's account, so they're kept in its **Sent** folder (the script can only send email, not read any).
+
 **If something stops.** Each scheduled run carries on past a step that fails and then shows as Failed under **Executions**, listing what failed. If the 10-minute checks haven't finished in an hour, the lab manager is emailed once, and lab managers see a notice at the top of the site. In **Triggers**, set each trigger's failure notifications to **Notify me immediately**.
 
 ## Tests

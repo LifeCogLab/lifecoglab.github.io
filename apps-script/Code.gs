@@ -502,13 +502,43 @@ function emailHtml(subject, lines, footer) {
 }
 
 // Every email goes through here, so they all look the same and all say how to report one sent by mistake.
+// Sent through Gmail itself, so each email is kept in your Sent folder like one you wrote, rather than turning up in
+// your inbox. Its permission only lets the script send email, not read any. If Gmail can't be reached, it falls back
+// to Apps Script's own mail service.
 function sendEmail({ to, subject, lines, footer = [] }) {
-  MailApp.sendEmail({
-    to,
-    subject,
-    body: [...lines.map(plainText), "", ...footer.map(plainText), `Received this email by mistake? Let the lab manager know: ${CONFIG.labManagerEmail}`].join("\n"),
-    htmlBody: emailHtml(subject, lines, footer),
-  });
+  const body = [...lines.map(plainText), "", ...footer.map(plainText), `Received this email by mistake? Let the lab manager know: ${CONFIG.labManagerEmail}`].join("\n");
+  const htmlBody = emailHtml(subject, lines, footer);
+  try {
+    Gmail.Users.Messages.send({ raw: Utilities.base64EncodeWebSafe(mimeMessage(to, subject, body, htmlBody), Utilities.Charset.UTF_8) }, "me");
+  } catch (error) {
+    console.log(`Gmail couldn't send "${subject}" (${error.message}), so it went through Apps Script's mail service instead.`);
+    MailApp.sendEmail({ to, subject, body, htmlBody });
+  }
+}
+
+// A plain-text and HTML email, as Gmail's send takes it.
+function mimeMessage(to, subject, body, htmlBody) {
+  const boundary = `lab-${Utilities.getUuid()}`;
+  const encoded = (text) => Utilities.base64Encode(text, Utilities.Charset.UTF_8).replace(/.{76}/g, "$&\r\n");
+  return [
+    `To: ${to}`,
+    `Subject: =?UTF-8?B?${Utilities.base64Encode(subject, Utilities.Charset.UTF_8)}?=`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    encoded(body),
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    encoded(htmlBody),
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
 }
 
 function emailDate(iso) {
