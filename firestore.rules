@@ -169,8 +169,10 @@ service cloud.firestore {
         && shortText(data.color) && shortText(data.dessert) && shortText(data.dietary)
         && data.updatedAt is string;
     }
+    // Everyone in the lab can see birthdays, favorites and dietary restrictions/allergies (the site only shows
+    // expected graduation to lab managers).
     match /profiles/{memberEmail} {
-      allow read: if verified() && (memberEmail == email() || isReviewer());
+      allow read: if verified() && isMember();
       allow create, update: if memberEmail == email() && isMember() && validProfile(request.resource.data);
       allow delete: if isReviewer();
     }

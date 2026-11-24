@@ -152,12 +152,12 @@ function bookingForm() {
     }
     if (form) {
       addFormNoteItems(form);
+      dontCollectEmails(form);
       return form;
     }
   }
   const form = FormApp.create("Lifespan Cognition Lab: Screener ID for a Booking");
   form.setDescription("Only the lab managers see this. Check the visit below is the one you booked, add the participant's Screener ID, and submit. Don't add anything else about the participant.")
-    .setCollectEmail(true)
     .setPublishingSummary(false)
     .setAllowResponseEdits(false)
     .setShowLinkToRespondAgain(false)
@@ -170,11 +170,22 @@ function bookingForm() {
   const visit = form.addTextItem().setTitle("Visit").setHelpText("Filled in for you. Please don't change it.").setRequired(true);
   form.addTextItem().setTitle("Screener ID").setRequired(true);
   addFormNoteItems(form);
+  dontCollectEmails(form);
   properties.setProperty("bookingFormId", form.getId());
   const url = form.createResponse().withItemResponse(visit.createResponse(VISIT_PLACEHOLDER)).toPrefilledUrl();
   writeDocument("settings/bookingForm", { url, placeholder: VISIT_PLACEHOLDER });
   console.log(`Booking form ready: ${form.getEditUrl()}`);
   return form;
+}
+
+// Collecting emails would let Google offer the booker a copy of their answers, Screener ID and all, so the form doesn't:
+// the site puts the booker's email at the end of the Visit field instead.
+function dontCollectEmails(form) {
+  try {
+    form.setEmailCollectionType(FormApp.EmailCollectionType.DO_NOT_COLLECT);
+  } catch (error) {
+    form.setCollectEmail(false);
+  }
 }
 
 const FORM_NOTE = "Note for the lab managers (optional)";
@@ -193,10 +204,11 @@ function addFormNoteItems(form) {
   }
 }
 
-// The form's Visit field, as the site fills it in: "Tue, Dec 1, 2026, 9:00 AM – 1:00 PM · 2026-12-01 · <visit key>".
+// The form's Visit field, as the site fills it in: "Tue, Dec 1, 2026, 9:00 AM – 1:00 PM · 2026-12-01 · <visit key> ·
+// <booker's email>". Links from before the email was added end with the key.
 function parseVisitField(text) {
-  const match = /(\d{4}-\d{2}-\d{2}) · (\S+)\s*$/.exec(text || "");
-  return match ? { date: match[1], key: match[2] } : null;
+  const match = /(\d{4}-\d{2}-\d{2}) · (\S+?)(?: · (\S+@\S+))?\s*$/.exec(text || "");
+  return match ? { date: match[1], key: match[2], by: match[3] || "" } : null;
 }
 
 function checkBookingForm(site, today) {
@@ -214,7 +226,7 @@ function checkBookingForm(site, today) {
     const answers = Object.fromEntries(response.getItemResponses().map((item) => [item.getItem().getTitle(), String(item.getResponse() || "").trim()]));
     const visit = parseVisitField(answers.Visit);
     const appointment = visit && visitsOn(rules, visit.date, site.appointments, site.holidays).find((item) => rules.visitKey(item) === visit.key);
-    const by = response.getRespondentEmail();
+    const by = (visit && visit.by) || response.getRespondentEmail() || "the booker";
     const screener = answers["Screener ID"];
     // The site only allows 500 characters for a note, so a longer one is cut short on the visit (it's in full here).
     const note = answers[FORM_NOTE] || "";

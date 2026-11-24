@@ -2243,7 +2243,7 @@ function fillBirthDays(selectedDay) {
 
 function fillProfileForm() {
   // Only the PI is told their phone number is kept from RAs.
-  document.getElementById("profile-privacy").textContent = `Your name and phone number are shown in the lab directory to everyone in the lab${isPi() ? ", except that RAs don't see your phone number" : ""}. Everything else is only seen by the lab managers, who are reminded before birthdays and graduations.`;
+  document.getElementById("profile-privacy").textContent = `Some of this information will be displayed in the lab-wide directory${isPi() ? ", except that RAs don't see your phone number" : ""}.`;
   const monthSelect = document.getElementById("profile-grad-month");
   const yearSelect = document.getElementById("profile-grad-year");
   monthSelect.replaceChildren(optionOf("n/a", "N/A, not a student"), ...MONTH_NAMES.map((name, index) => optionOf(String(index + 1).padStart(2, "0"), name)));
@@ -2426,17 +2426,14 @@ function directoryPeople() {
   }));
 }
 
+// Built from the directory, which everyone can see, rather than the member list, which only lab managers have.
 function detailsRows() {
-  return members.map((member) => {
-    const entry = directory.find((item) => item.email === member.email) || {};
-    return {
-      name: member.name,
-      lastName: entry.lastName || "",
-      fullName: entry.lastName ? `${member.name} ${entry.lastName}` : member.name,
-      title: titleOf(member),
-      profile: profiles.find((item) => item.email === member.email),
-    };
-  });
+  return directory.map((entry) => ({
+    ...entry,
+    lastName: entry.lastName || "",
+    fullName: entry.lastName ? `${entry.name} ${entry.lastName}` : entry.name,
+    profile: profiles.find((item) => item.email === entry.email),
+  }));
 }
 
 function directoryTable(rows) {
@@ -2464,7 +2461,8 @@ function detailsTable(rows) {
     { key: "name", label: "Name", width: "19%", sortValue: byLastName, render: personCell },
     { key: "title", label: "Role", width: "12%", sortValue: byTitle, render: (row) => titleBadge(row.title) },
     { key: "birthday", label: "Birthday", width: "10%", sortValue: (row) => (row.profile ? birthdayMonthDay(row.profile.birthday) : "~"), render: (row) => missing(row, (profile) => formatBirthday(profile.birthday)) },
-    { key: "graduation", label: "Expected graduation", width: "12%", sortValue: (row) => (row.profile && row.profile.graduation !== "n/a" ? row.profile.graduation : "~"), render: (row) => missing(row, (profile) => formatGraduation(profile.graduation)) },
+    // Expected graduation is for lab managers only.
+    ...(isReviewer() ? [{ key: "graduation", label: "Expected graduation", width: "12%", sortValue: (row) => (row.profile && row.profile.graduation !== "n/a" ? row.profile.graduation : "~"), render: (row) => missing(row, (profile) => formatGraduation(profile.graduation)) }] : []),
     { key: "color", label: "Favorite color", width: "13%", sortValue: lower("color"), render: (row) => missing(row, (profile) => colorCell(profile.color)) },
     { key: "dessert", label: "Favorite dessert", width: "14%", sortValue: lower("dessert"), render: (row) => missing(row, (profile) => profile.dessert) },
     { key: "dietary", label: "Dietary restrictions/allergies", width: "20%", sortValue: lower("dietary"), render: (row) => missing(row, (profile) => profile.dietary) },
@@ -2474,19 +2472,21 @@ function detailsTable(rows) {
   }, { fit: true });
 }
 
-// One table at a time, with the roles as tabs along its bottom like a spreadsheet's sheets. Lab managers can switch
-// to Birthdays, Grad Dates, and More, which nobody else can see.
+// One table at a time, with the roles as tabs like a spreadsheet's sheets. Everyone can switch to Birthdays and More
+// (birthdays, favorites and dietary restrictions/allergies); lab managers also see expected graduations there.
 function renderDirectory() {
   if (!me) return;
-  if (!isReviewer()) directoryView = "directory";
   const details = directoryView === "details";
-  document.getElementById("directory-views").hidden = !isReviewer();
+  document.getElementById("directory-views").hidden = false;
+  document.querySelector('[data-directory-view="details"]').textContent = isReviewer() ? "Birthdays, Grad Dates, and More" : "Birthdays and More";
   for (const button of document.querySelectorAll("[data-directory-view]")) {
     button.setAttribute("aria-pressed", String(button.dataset.directoryView === directoryView));
   }
-  document.getElementById("directory-heading").textContent = details ? "Lab Birthdays, Grad Dates, and More" : "Lab Directory";
+  document.getElementById("directory-heading").textContent = details ? (isReviewer() ? "Lab Birthdays, Grad Dates, and More" : "Lab Birthdays and More") : "Lab Directory";
   document.getElementById("directory-intro").textContent = details
-    ? "Everyone's birthday, expected graduation, favorites and dietary restrictions/allergies. Only lab managers can see this."
+    ? (isReviewer()
+      ? "Everyone's birthday, favorites and dietary restrictions/allergies, which the whole lab can see, and expected graduation, which only lab managers can see."
+      : "Everyone's birthday, favorite color and dessert, and dietary restrictions/allergies. Change your own under My Profile in the menu at the top right.")
     : "Everyone in the lab, with their role, email and phone number. Change your own under My Profile in the menu at the top right.";
   const rows = details ? detailsRows() : directoryPeople();
   const tab = DIRECTORY_TABS.find((item) => item.key === directoryTab) || DIRECTORY_TABS[0];
@@ -3474,7 +3474,9 @@ function bookingEmailLink(iso, appointment) {
 function bookingFormUrl(iso, appointment) {
   const form = calendarSettings.bookingForm;
   if (!form || !form.url || !form.placeholder) return "";
-  const visit = `${formatIsoWithDay(iso)}, ${visitTimesText(appointment)} · ${iso} · ${visitKey(appointment)}`;
+  // The booker's own email goes last, since the form doesn't collect emails (that would offer them a copy of their
+  // answers, Screener ID and all).
+  const visit = `${formatIsoWithDay(iso)}, ${visitTimesText(appointment)} · ${iso} · ${visitKey(appointment)} · ${me.email}`;
   return form.url.replace(form.placeholder, encodeURIComponent(visit));
 }
 
@@ -5171,7 +5173,8 @@ async function refresh() {
     isReviewer() ? [] : Store.listReviewers(),
     Store.getProfile(me.email),
     Store.listDirectory(),
-    isReviewer() ? Store.listProfiles() : [],
+    // Everyone sees birthdays, favorites and dietary restrictions/allergies; only lab managers see graduation dates.
+    Store.listProfiles(),
     // RAs can't see a PI's phone number, so they don't ask for it.
     isReviewer() || isGrad() ? Store.listPrivatePhones() : [],
     Store.getSettings(),
