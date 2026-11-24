@@ -2147,6 +2147,13 @@ function myLastName() {
   return entry ? entry.lastName || "" : "";
 }
 
+// US numbers read as (000) 000-0000, however they were typed. Anything else is shown as typed.
+function formatPhone(phone) {
+  const digits = String(phone).replace(/\D/g, "");
+  const local = digits.length === 11 && digits[0] === "1" ? digits.slice(1) : digits;
+  return local.length === 10 ? `(${local.slice(0, 3)}) ${local.slice(3, 6)}-${local.slice(6)}` : phone;
+}
+
 function phoneOf(email) {
   const entry = directory.find((item) => item.email === email);
   const kept = privatePhones.find((item) => item.email === email);
@@ -2394,7 +2401,7 @@ function directoryTable(rows) {
     { key: "title", label: "Role", sortValue: byTitle, render: (row) => titleBadge(row.title) },
     { key: "email", label: "Email", sortValue: (row) => row.email, render: (row) => linkTo(`mailto:${row.email}`, row.email) },
     { key: "phone", label: "Phone", sortValue: (row) => row.phone || "~", render: (row) => {
-      if (row.phone) return linkTo(`tel:${row.phone.replace(/[^0-9+]/g, "")}`, row.phone);
+      if (row.phone) return linkTo(`tel:${row.phone.replace(/[^0-9+]/g, "")}`, formatPhone(row.phone));
       return viewerIsRa && row.title === "PI" ? el("span", "") : el("span", "muted", "Not added yet");
     } },
   ], rows, directorySort, (sort) => {
@@ -4091,6 +4098,11 @@ async function proposeChange(plan, summary) {
   const changesSaved = full.updates.length || full.deletes.length;
   if (isReviewer() || !changesSaved) {
     await Store.applyClassPlan(full);
+    // An RA adding class times (with nothing to review) still lets the lab managers know.
+    if (changesNeedReview() && full.creates.some((entry) => entry.type === "class")) {
+      await leaveNotice("schedule", summary || `New class times: ${full.creates.map(describeEntry).join("; ")}`);
+      return "Saved. The lab managers have been told.";
+    }
     return "Saved.";
   }
   if (isGrad()) {

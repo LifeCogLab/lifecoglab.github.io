@@ -86,6 +86,7 @@ Run **setUp** again whenever you paste in a new `Code.gs`. To see what it did, o
 **Reviewer emails.** Emails go to all the reviewers at once rather than one each, so the account the script runs under doesn't collect copies of every reviewer's email, and nobody is emailed about something they did themselves. Each reviewer picks which kinds they get under **Lab Management → My Settings**; a reviewer who turns a kind off is simply left off those emails.
 
 - **Requests to review**: new time off requests and schedule changes, once per request, linking to **Review Requests**. The first check after setup only notes what's already waiting.
+- **Class schedules added**: within about 10 minutes of an RA adding their class schedule (which needs no review).
 - **Saved schedule changes**: changes and time off Grad Students/Post-Docs saved without review.
 - **Cancellations**: straight away when a booking is cancelled (the visit stays open to rebook, and its staff aren't told), or when a booked or staffed visit is cancelled on the site. Visits being booked aren't emailed by the script: the booker emails the reviewers from their own account, with the Screener ID.
 - **Scan booking reminder**: at 8:30 AM, which newly opened visit needs its scan booked, with links to the DNI booking page and to the slot on the Lab Calendar, and a reminder to change the slot's 11:00 AM – 1:00 PM scan time there if a different time was booked.

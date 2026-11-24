@@ -34,7 +34,7 @@ service cloud.firestore {
         : (member.role == 'grad' ? (member.get('title', '') == 'Post-Doc' ? 'Post-Doc' : 'PhD Student') : 'RA'));
     }
     function emailKinds() {
-      return ['requests', 'updates', 'bookings', 'cancellations', 'scanReminders', 'unbookedSlots', 'celebrations', 'missingSchedules', 'websiteUpdates'];
+      return ['requests', 'updates', 'bookings', 'cancellations', 'scanReminders', 'unbookedSlots', 'celebrations', 'schedules', 'missingSchedules', 'websiteUpdates'];
     }
     function owns(data) {
       return isMember() && data.ownerEmail == email();
@@ -204,9 +204,10 @@ service cloud.firestore {
     // Apps Script emails the lab managers about it and deletes it.
     match /notices/{id} {
       allow read, delete: if isReviewer();
-      allow create: if owns(request.resource.data) && (isGrad() || get(memberPath()).data.role == 'pi')
+      // Anyone can say they've added class times; other notices come from Grad Students/Post-Docs and the PI.
+      allow create: if owns(request.resource.data) && (isGrad() || get(memberPath()).data.role == 'pi' || request.resource.data.kind == 'schedule')
         && request.resource.data.keys().hasOnly(['ownerEmail', 'kind', 'summary', 'createdAt'])
-        && request.resource.data.kind in ['change', 'timeOff', 'labManagement']
+        && request.resource.data.kind in ['change', 'timeOff', 'labManagement', 'schedule']
         && (request.resource.data.kind != 'labManagement' || get(memberPath()).data.role == 'pi')
         && request.resource.data.summary is string && request.resource.data.summary.size() <= 600
         && request.resource.data.createdAt is string;

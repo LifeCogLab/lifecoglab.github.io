@@ -18,6 +18,7 @@ const RESPONSIBILITIES = ["Booking"];
 // The emails reviewers can each turn on or off. Staff emails about visits they're staffing can't be turned off.
 const REVIEWER_EMAILS = [
   { key: "requests", label: "Requests to review", help: "Time off requests and schedule changes from RAs, within about 10 minutes. Your own aren't emailed to you." },
+  { key: "schedules", label: "Class schedules added", help: "Within about 10 minutes of an RA adding their class schedule." },
   { key: "updates", label: "Saved schedule changes", help: "Changes and time off that Grad Students/Post-Docs save without review." },
   { key: "cancellations", label: "Cancellations", help: "Straight away when a booking is cancelled (the visit stays open to rebook), or a booked or staffed visit is cancelled. Bookings themselves come from the booker's own email." },
   { key: "scanReminders", label: "Scan booking reminder", help: "At 8:30 AM each morning, which newly opened visit needs its scan booked." },

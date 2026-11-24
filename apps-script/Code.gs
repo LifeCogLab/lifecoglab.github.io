@@ -374,6 +374,13 @@ function updatesEmail(updates, nameOf) {
   };
 }
 
+function schedulesEmail(items, nameOf) {
+  return {
+    subject: items.length === 1 ? `Lab schedule: ${nameOf(items[0].owner)} added their class schedule` : `Lab schedule: ${items.length} class schedules added`,
+    lines: ["These RAs added class times (no review needed):", "", ...items.map((item) => `• ${bold(nameOf(item.owner))}: ${item.text}`), "", `See them on the site: ${CONFIG.siteUrl}`],
+  };
+}
+
 // Emails reviewers about requests waiting for review, once per request, and about changes Grad Students/Post-Docs
 // have already saved. The first run only notes what's already waiting, so turning this on doesn't send a flood.
 function checkRequests() {
@@ -415,9 +422,12 @@ function checkRequests() {
     if (managers.length) sendEmail({ to: managers.map((member) => member.id).join(","), ...labManagementEmail(notice, nameOf(notice.ownerEmail), managers) });
   }
   // Requests and saved updates are separate kinds of email, so each reviewer gets just the ones they want.
-  const updateItems = notices.filter((notice) => notice.kind !== "labManagement").map((notice) => ({ id: `notices/${notice.id}`, owner: notice.ownerEmail, text: notice.summary, choice: takeChoice(choices, "updates", `notices/${notice.id}`) }));
+  const updateItems = notices.filter((notice) => !["labManagement", "schedule"].includes(notice.kind)).map((notice) => ({ id: `notices/${notice.id}`, owner: notice.ownerEmail, text: notice.summary, choice: takeChoice(choices, "updates", `notices/${notice.id}`) }));
+  // RAs adding class times, which needs no review.
+  const scheduleItems = notices.filter((notice) => notice.kind === "schedule").map((notice) => ({ id: `notices/${notice.id}`, owner: notice.ownerEmail, text: notice.summary }));
   const emailed = emailReviewers(rules, members, "requests", fresh, (requests) => requestsEmail(requests, nameOf))
-    + emailReviewers(rules, members, "updates", updateItems, (updates) => updatesEmail(updates, nameOf));
+    + emailReviewers(rules, members, "updates", updateItems, (updates) => updatesEmail(updates, nameOf))
+    + emailReviewers(rules, members, "schedules", scheduleItems, (items) => schedulesEmail(items, nameOf));
   // Requests that were waiting last time and have been decided since: the person who sent them hears how it went.
   const decided = [...notified].filter((id) => !pendingIds.includes(id)).map((id) => {
     const [collection, docId] = id.split("/");
@@ -1476,6 +1486,7 @@ function sendTestEmails() {
     { owner: "taylor@usc.edu", text: 'Schedule change: Add "Unavailable, standing conflict (Lab meeting): Fri, 1:00 PM – 2:00 PM"' },
   ], nameOf));
   toReviewers(updatesEmail([{ owner: "taylor@usc.edu", text: "Time off: Feb 3, 2027 (Conference)" }], nameOf));
+  toReviewers(schedulesEmail([{ owner: "jordan@usc.edu", text: "New Spring 2027 class times from Jan 11, 2027 to Apr 30, 2027: Mon, Wed 10:00 AM – 11:50 AM" }], nameOf));
   toReviewers(cancellationsEmail(rules, [{ key: "default-2027-01-12", kind: "booking", visit: { date: "2027-01-12", times: "9:00 AM – 1:00 PM", by: "Jordan", seeTime: false } }]));
   toReviewers(cancellationsEmail(rules, [{ key: "x", kind: "visit", visit: { date: "2027-01-14", times: "9:00 AM – 1:00 PM", seeTime: true } }]));
   toReviewers(scanReminderEmail(rules, "2027-01-12", usual));
